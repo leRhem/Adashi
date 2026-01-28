@@ -8,7 +8,8 @@ import { useNavigate } from 'react-router-dom';
 import GroupCard from '../components/ui/GroupCard';
 import StatsCreditCard from '../components/ui/StatsCreditCard';
 import CreateGroupModal from '../components/modals/CreateGroupModal';
-import type { Group, GroupMode, GroupStatus } from '../types';
+import AccessFundsModal, { type ClaimableItem } from '../components/modals/AccessFundsModal';
+import type { Group, GroupMode, GroupStatus, Member } from '../types';
 import { useStacksConnect } from '../hooks/useStacksConnect';
 import { useContract, STATUS_ENROLLMENT, STATUS_ACTIVE } from '../hooks/useContract';
 
@@ -20,6 +21,8 @@ export default function Dashboard() {
   const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('active');
   const [isCreateModalOpen, setCreateModalOpen] = useState(false);
+  const [isWithdrawModalOpen, setWithdrawModalOpen] = useState(false);
+  const [claimableItems, setClaimableItems] = useState<ClaimableItem[]>([]);
   const navigate = useNavigate();
 
   // Fetch user's groups from contract (both created AND joined)
@@ -35,6 +38,7 @@ export default function Dashboard() {
         const count = await getPublicGroupCount();
         console.log('Public group count:', count);
         const userGroups: Group[] = [];
+        const memberCache = new Map<string, any>(); // Cache for member data
         
         for (let i = 0; i < count; i++) {
           const groupData = await getPublicGroupByIndex(i);
@@ -50,6 +54,9 @@ export default function Dashboard() {
               try {
                 const memberData = await getGroupMember(groupData.groupId, userAddress);
                 isMember = memberData !== null;
+                if (isMember && memberData) {
+                    memberCache.set(groupData.groupId, memberData);
+                }
                 console.log(`Membership check for ${groupData.groupId}:`, isMember);
               } catch (err) {
                 console.error(`Error checking membership for ${groupData.groupId}:`, err);
@@ -87,8 +94,62 @@ export default function Dashboard() {
           }
         }
         
-        console.log('User groups found:', userGroups.length);
+
         setMyGroups(userGroups);
+
+        // Fetch Member Data for all groups to determine claimable balance
+
+        
+        // This could be optimized to run partially in parallel with group fetching, but keeping it simple for now
+        // Fetch Member Data for all groups to determine claimable balance
+        const items: ClaimableItem[] = [];
+        
+        for (const grp of userGroups) {
+            try {
+                // Use cached member data if available, otherwise fetch
+                let memberRaw = memberCache.get(grp.id);
+                if (!memberRaw) {
+                     memberRaw = await getGroupMember(grp.id, userAddress);
+                }
+
+                if (memberRaw) {
+                     const member: Member = {
+                        address: userAddress,
+                        name: memberRaw.memberName,
+                        position: memberRaw.payoutPosition,
+                        joinedAt: memberRaw.joinedAt,
+                        lastDepositCycle: (memberRaw as any).lastDepositCycle || 0, 
+                        hasWithdrawn: memberRaw.hasWithdrawn,
+                        hasReceivedPayout: memberRaw.hasReceivedPayout,
+                        totalContributed: memberRaw.totalContributed
+                     };
+
+                     // Check ROSCA Payout
+                     if (grp.mode === 1 && grp.status === 'active' && !member.hasWithdrawn && !member.hasReceivedPayout && grp.currentCycle === member.position) {
+                         // Estimate Pot: Members * Deposit
+                         items.push({
+                             group: grp,
+                             amount: grp.currentMembers * grp.depositAmount,
+                             type: 'payout',
+                             cycle: member.position
+                         });
+                     }
+                     
+                     // Check Collective Withdrawal
+                     if (grp.mode === 2 && grp.status === 'withdrawal_open' && !member.hasWithdrawn) {
+                         items.push({
+                             group: grp,
+                             amount: member.totalContributed || 0,
+                             type: 'savings'
+                         });
+                     }
+                }
+            } catch (err) {
+                 console.error(`Error fetching member details for ${grp.id}:`, err);
+            }
+        }
+        setClaimableItems(items);
+
       } catch (err) {
         console.error('Error fetching user groups:', err);
       } finally {
@@ -99,14 +160,12 @@ export default function Dashboard() {
     fetchMyGroups();
   }, [userAddress]);
 
-  // TODO: Implement withdraw with proper group context
-  const handleWithdraw = async () => {
-    const groupId = window.prompt('Enter Group ID to withdraw from:');
-    if (groupId) {
-      console.log('Withdraw from group:', groupId);
-      // Placeholder for future: withdrawSavings(groupId, onFinish, onCancel)
-    }
+  // Handle withdraw click
+  const handleWithdraw = () => {
+    setWithdrawModalOpen(true);
   };
+  
+  const claimableBalance = claimableItems.reduce((sum, item) => sum + item.amount, 0);
 
   const filteredGroups = useMemo(() => {
     return myGroups.filter(group => {
@@ -150,8 +209,8 @@ export default function Dashboard() {
         {/* Unified Stats Card */}
         <div className="mb-12">
           <StatsCreditCard 
-            balance={myGroups.reduce((sum, g) => sum + (g.poolBalance ?? 0), 0) / 1000000} 
-            activeGroups={myGroups.filter(g => g.status === 'active' || g.status === 'enrollment').length} 
+            balance={claimableBalance / 1000000}  // Convert to STX
+            activeGroups={myGroups.filter(g => g.status === 'active' || g.status === 'enrollment').length}  
             pendingActions={myGroups.filter(g => g.status === 'enrollment').length} 
             totalReceived={0}
             userAddress={userAddress}
@@ -238,6 +297,16 @@ export default function Dashboard() {
           setCreateModalOpen(false);
           // Trigger a page refresh to fetch the newly created group
           window.location.reload();
+        }}
+      />
+      
+      <AccessFundsModal
+        isOpen={isWithdrawModalOpen}
+        onClose={() => setWithdrawModalOpen(false)}
+        claimableItems={claimableItems}
+        onSuccess={() => {
+            setWithdrawModalOpen(false);
+            window.location.reload();
         }}
       />
     </div>

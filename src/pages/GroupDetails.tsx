@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { 
   ArrowLeft, Share2, UserPlus, DollarSign, 
   Calendar, User, Coins, Users, BarChart, 
-  Activity, Shield, Info, Globe, Zap, Loader2
+  Activity, Shield, Info, Globe, Zap, Loader2,
+  PlayCircle, LogOut, Clock, History
 } from 'lucide-react';
 import type { Group, Member } from '../types';
 import type { GroupStatus, GroupMode } from '../types';
@@ -13,45 +14,58 @@ import { useStacksConnect } from '../hooks/useStacksConnect';
 import { useContract, STATUS_ENROLLMENT, STATUS_ACTIVE } from '../hooks/useContract';
 import { motion } from 'framer-motion';
 
+interface HistoryItem {
+  type: 'deposit' | 'payout' | 'withdrawal';
+  amount: number;
+  cycle: number;
+  status: 'confirmed' | 'pending';
+  timestamp?: number;
+}
+
 export default function GroupDetails() {
   const { id: groupId } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
   const { userAddress } = useStacksConnect();
-  const { getGroup, getGroupMember, joinPublicGroup, deposit, claimPayout } = useContract();
+  const { getGroup, getGroupMember, joinPublicGroup, deposit, claimPayout, withdrawSavings, closeEnrollmentAndStart, openEnrollmentPeriod } = useContract();
+  
+  // Helper to convert blocks to days (1 block ≈ 10 minutes on Stacks)
+  const formatCycleDuration = (blocks: number): string => {
+    const days = Math.round((blocks * 10) / (60 * 24)); // 10 min per block
+    if (days === 0) return 'less than a day';
+    if (days === 1) return '1 day';
+    if (days < 7) return `${days} days`;
+    if (days === 7) return '1 week';
+    if (days < 30) return `${Math.round(days / 7)} weeks`;
+    return `${Math.round(days / 30)} months`;
+  };
   
   const [group, setGroup] = useState<Group | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isMember, setIsMember] = useState(false);
   const [memberData, setMemberData] = useState<Member | null>(null);
+  const [knownMembers, setKnownMembers] = useState<Member[]>([]);
+  const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
+  const { getContribution } = useContract();
   
   const [activeTab, setActiveTab] = useState('Overview');
   const [showJoinModal, setShowJoinModal] = useState(false);
+  const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [memberName, setMemberName] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Get group data from router state (passed from GroupCard)
-  useEffect(() => {
-    const fetchGroupData = async () => {
-      setIsLoading(true);
+  // Get group data
+  const refetchGroupData = useCallback(async () => {
       setError(null);
       
       try {
-        // First, check if group data was passed via router state
-        const stateGroup = location.state?.group as Group | undefined;
-        
-        if (stateGroup) {
-          console.log('Using group data from router state:', stateGroup);
-          setGroup(stateGroup);
-          
-          // Check creator status
-          if (userAddress && stateGroup.creator === userAddress) {
-            setIsMember(true);
-          }
-        } else if (groupId) {
-          // Fallback: try to fetch from contract (may not work with generated IDs)
-          console.log('Attempting to fetch group by ID:', groupId);
+        let currentGroup = location.state?.group as Group | undefined;
+        let fetchedGroupId = groupId;
+
+        if (groupId) {
+          console.log('Fetching fresh group data by ID:', groupId);
           const groupData = await getGroup(groupId);
           
           if (groupData) {
@@ -63,7 +77,7 @@ export default function GroupDetails() {
               4: 'withdrawal_open'
             };
             
-            setGroup({
+            currentGroup = {
               id: groupId,
               groupName: groupData.name,
               description: groupData.description || '',
@@ -79,44 +93,170 @@ export default function GroupDetails() {
               enrollmentEndBlock: groupData.enrollmentEndBlock,
               createdAt: groupData.createdAt,
               poolBalance: groupData.totalPoolBalance
-            });
-            
-            // Check if current user is a member
-            if (userAddress) {
-              const member = await getGroupMember(groupId, userAddress);
+            };
+          } else if (!currentGroup) {
+             setError('Group not found. Please navigate from the Browse page.');
+          }
+        } 
+        
+        if (currentGroup) {
+            setGroup(currentGroup);
+
+            // ALWAYS check if current user is a member
+            let currentUserMember: Member | null = null;
+            if (userAddress && fetchedGroupId) {
+              const member = await getGroupMember(fetchedGroupId, userAddress);
               if (member) {
+                console.log('Membership confirmed for:', userAddress);
                 setIsMember(true);
-                setMemberData({
+                currentUserMember = {
                   address: userAddress,
                   name: member.memberName,
                   position: member.payoutPosition,
                   joinedAt: member.joinedAt,
-                  lastDepositCycle: 0, // Not in contract data
-                  hasWithdrawn: member.hasWithdrawn
-                });
+                  lastDepositCycle: 0,
+                  hasWithdrawn: member.hasWithdrawn,
+                  hasReceivedPayout: member.hasReceivedPayout,
+                  totalContributed: member.totalContributed
+                };
+                setMemberData(currentUserMember);
+              } else {
+                console.log('User is NOT a member:', userAddress);
+                setIsMember(false);
+                setMemberData(null);
               }
             }
-          } else {
-            setError('Group not found. Please navigate from the Browse page.');
-          }
-        } else {
-          setError('No group ID provided');
+
+            // Also check if creator is a member (to show in list)
+            let creatorMember: Member | null = null;
+            if (currentGroup.creator && fetchedGroupId && currentGroup.creator !== userAddress) {
+                const cMember = await getGroupMember(fetchedGroupId, currentGroup.creator);
+                if (cMember) {
+                     creatorMember = {
+                        address: currentGroup.creator,
+                        name: cMember.memberName,
+                        position: cMember.payoutPosition,
+                        joinedAt: cMember.joinedAt,
+                        lastDepositCycle: 0,
+                        hasWithdrawn: cMember.hasWithdrawn
+                     };
+                }
+            }
+
+            // Build known members list
+            const membersList: Member[] = [];
+            if (currentUserMember) membersList.push(currentUserMember);
+            if (creatorMember) membersList.push(creatorMember);
+            
+            // Sort by position
+            membersList.sort((a, b) => a.position - b.position);
+            setKnownMembers(membersList);
         }
       } catch (err) {
         console.error('Error fetching group:', err);
         setError('Failed to load group data');
-      } finally {
-        setIsLoading(false);
       }
+  }, [groupId, userAddress, location.state, getGroup, getGroupMember]);
+
+  useEffect(() => {
+    setIsLoading(true);
+    refetchGroupData().finally(() => setIsLoading(false));
+  }, [refetchGroupData]);
+
+
+
+  // Fetch history when group and member data is available
+  useEffect(() => {
+    const fetchHistory = async () => {
+        if (!group || !userAddress || !groupId || !memberData) return;
+        
+        const history: HistoryItem[] = [];
+        const BATCH_SIZE = 5;
+        
+        // 1. Check past deposits (Contributions)
+        // We check from cycle 0 up to current cycle
+        try {
+            const totalCycles = group.currentCycle + 1; // 0 to currentCycle inclusive
+            
+            for (let i = 0; i < totalCycles; i += BATCH_SIZE) {
+                const batchPromises = [];
+                // Create a batch of promises
+                for (let j = i; j < Math.min(i + BATCH_SIZE, totalCycles); j++) {
+                     batchPromises.push(getContribution(groupId, userAddress, j).then(c => ({ cycle: j, data: c })));
+                }
+
+                // Wait for this batch to complete
+                const results = await Promise.all(batchPromises);
+                
+                results.forEach(({ cycle, data }) => {
+                    if (data && data.isPaid) {
+                        history.push({
+                            type: 'deposit',
+                            amount: data.amount > 0 ? data.amount : group.depositAmount, // Fallback if amount 0 (old contract version)
+                            cycle: cycle,
+                            status: 'confirmed'
+                        });
+                    }
+                });
+            }
+        } catch (e) {
+            console.error('Error fetching history contributions:', e);
+        }
+
+        // 2. Check Payout
+        if (memberData.hasReceivedPayout) {
+            history.push({
+                type: 'payout',
+                amount: group.depositAmount * group.currentMembers, // Est. amount
+                cycle: memberData.position, // Payout happens at their position
+                status: 'confirmed'
+            });
+        }
+
+        // 3. Check Withdrawal
+        if (memberData.hasWithdrawn) {
+             history.push({
+                type: 'withdrawal',
+                amount: memberData.totalContributed || 0,
+                cycle: group.currentCycle,
+                status: 'confirmed'
+            });
+        }
+
+        // Sort by cycle desc
+        history.sort((a, b) => b.cycle - a.cycle);
+        setHistoryItems(history);
     };
-    
-    fetchGroupData();
-  }, [groupId, userAddress, location.state]);
+
+    if (activeTab === 'History') {
+        fetchHistory();
+    }
+  }, [group, memberData, activeTab, groupId, userAddress, getContribution]);
 
   // Derived state
+  // Debug creator check
+  if (group && userAddress) {
+      console.log('Creator Check:', {
+          creator: group.creator,
+          user: userAddress,
+          match: group.creator === userAddress,
+          matchLower: group.creator.toLowerCase() === userAddress.toLowerCase()
+      });
+  }
+  const isCreator = group && userAddress && (group.creator === userAddress || group.creator.toLowerCase() === userAddress.toLowerCase());
   const canJoin = group && !isMember && group.status === 'enrollment';
   const needsDeposit = group && isMember && group.status === 'active';
-  const canClaim = group && group.mode === 1 && isMember && memberData && !memberData.hasWithdrawn;
+  const canClaim = group && group.mode === 1 && isMember && memberData && !memberData.hasWithdrawn && group.status === 'active' && group.currentCycle === memberData.position;
+  const canWithdraw = group && group.mode === 2 && isMember && group.status === 'withdrawal_open';
+  const canStartGroup = isCreator && group && group.status === 'enrollment';
+
+  // Handle auto-open join modal from navigation state
+  useEffect(() => {
+    if (location.state?.autoOpenJoin && !isMember && group && group.status === 'enrollment') {
+        console.log('Auto-opening join modal');
+        setShowJoinModal(true);
+    }
+  }, [location.state, isMember, group]);
 
   // Handle join group
   const handleJoinGroup = async () => {
@@ -127,12 +267,13 @@ export default function GroupDetails() {
       await joinPublicGroup(
         groupId,
         memberName,
-        (data) => {
+        async (data) => {
           console.log('Joined group successfully:', data);
           setShowJoinModal(false);
           setIsMember(true);
           // Refresh group data
-          window.location.reload();
+          await refetchGroupData();
+          setIsSubmitting(false);
         },
         () => {
           setIsSubmitting(false);
@@ -152,10 +293,10 @@ export default function GroupDetails() {
     try {
       await deposit(
         groupId,
-        (data) => {
+        async (data) => {
           console.log('Deposit successful:', data);
+          await refetchGroupData();
           setIsSubmitting(false);
-          window.location.reload();
         },
         () => {
           setIsSubmitting(false);
@@ -175,10 +316,10 @@ export default function GroupDetails() {
     try {
       await claimPayout(
         groupId,
-        (data) => {
+        async (data) => {
           console.log('Payout claimed:', data);
+          await refetchGroupData();
           setIsSubmitting(false);
-          window.location.reload();
         },
         () => {
           setIsSubmitting(false);
@@ -186,6 +327,85 @@ export default function GroupDetails() {
       );
     } catch (err) {
       console.error('Error claiming payout:', err);
+      setIsSubmitting(false);
+    }
+  };
+
+  // Handle withdraw savings (Collective mode)
+  // Open withdraw confirmation
+  const handleWithdrawSavings = () => {
+    if (!groupId || !memberData) return;
+    setShowWithdrawModal(true);
+  };
+
+  // Execute withdrawal
+  const confirmWithdrawal = async () => {
+     if (!groupId) return;
+    
+    setIsSubmitting(true);
+    try {
+      await withdrawSavings(
+        groupId,
+        async (data) => {
+          console.log('Savings withdrawn:', data);
+          setShowWithdrawModal(false);
+          await refetchGroupData();
+          setIsSubmitting(false);
+        },
+        () => {
+          setIsSubmitting(false);
+        }
+      );
+    } catch (err) {
+      console.error('Error withdrawing savings:', err);
+      setIsSubmitting(false);
+    }
+  };
+
+  // Handle start group (Creator only - close enrollment and start)
+  const handleStartGroup = async () => {
+    if (!groupId || !isCreator) return;
+    
+    setIsSubmitting(true);
+    try {
+      await closeEnrollmentAndStart(
+        groupId,
+        async (data) => {
+          console.log('Group started:', data);
+          await refetchGroupData();
+          setIsSubmitting(false);
+        },
+        () => {
+          setIsSubmitting(false);
+        }
+      );
+    } catch (err) {
+      console.error('Error starting group:', err);
+      setIsSubmitting(false);
+    }
+  };
+
+  // Handle open enrollment (Creator only - between cycles)
+  const handleOpenEnrollment = async () => {
+    if (!groupId || !isCreator) return;
+    
+    setIsSubmitting(true);
+    try {
+      // Default to same duration as cycle for now (could be a modal input)
+      await openEnrollmentPeriod(
+        groupId,
+        144, // approx 24 hours
+        async (data) => {
+          console.log('Enrollment opened:', data);
+          await refetchGroupData();
+          setIsSubmitting(false);
+        },
+        () => {
+          setIsSubmitting(false);
+        }
+      );
+    } catch (err) {
+      console.error('Error opening enrollment:', err);
       setIsSubmitting(false);
     }
   };
@@ -298,7 +518,7 @@ export default function GroupDetails() {
                   <div className="flex items-center space-x-2 px-4 py-2 bg-bg-base rounded-xl">
                     <Calendar className="w-4 h-4 text-text-tertiary" />
                     <span className="text-[10px] font-black text-text-tertiary uppercase tracking-widest">
-                      Started: <span className="text-text-base">{group.createdAt ? new Date(group.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A'}</span>
+                      Created: <span className="text-text-base">Block #{group.createdAt}</span>
                     </span>
                   </div>
                 </div>
@@ -314,6 +534,13 @@ export default function GroupDetails() {
                     <UserPlus className="w-5 h-5" />
                     <span>Join Group</span>
                   </button>
+                )}
+
+                {!canJoin && group.status === 'enrollment' && isMember && (
+                    <div className="flex flex-col items-center justify-center px-6 py-4 bg-bg-base/50 rounded-2xl border border-white/5">
+                        <span className="text-text-secondary text-[10px] font-black uppercase tracking-widest mb-1">Status: Waiting to Start</span>
+                        <span className="text-xs text-text-tertiary italic">Deposits open when active.</span>
+                    </div>
                 )}
                 
                 {isMember && needsDeposit && (
@@ -338,6 +565,30 @@ export default function GroupDetails() {
                     </button>
                 )}
 
+                {/* Withdraw Savings - Collective Mode */}
+                {canWithdraw && (
+                    <button
+                        onClick={handleWithdrawSavings}
+                        disabled={isSubmitting}
+                        className={`px-8 py-5 bg-emerald-500 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:scale-[1.02] transition-all shadow-xl shadow-emerald-500/20 flex items-center justify-center space-x-3 transform active:scale-95 ${isSubmitting ? 'opacity-70' : ''}`}
+                    >
+                        {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <LogOut className="w-5 h-5" />}
+                        <span>{isSubmitting ? 'Processing...' : 'Withdraw Savings'}</span>
+                    </button>
+                )}
+
+                {/* Start Group - Creator Only */}
+                {canStartGroup && group.currentMembers >= 2 && (
+                    <button
+                        onClick={handleStartGroup}
+                        disabled={isSubmitting}
+                        className={`px-8 py-5 bg-amber-500 text-white rounded-2xl font-black text-xs uppercase tracking-widest hover:scale-[1.02] transition-all shadow-xl shadow-amber-500/20 flex items-center justify-center space-x-3 transform active:scale-95 ${isSubmitting ? 'opacity-70' : ''}`}
+                    >
+                        {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <PlayCircle className="w-5 h-5" />}
+                        <span>{isSubmitting ? 'Starting...' : 'Start Group'}</span>
+                    </button>
+                )}
+
                 <button className="p-5 bg-bg-base text-text-tertiary rounded-2xl hover:text-deep-teal transition-all group active:scale-95 shadow-sm">
                   <Share2 className="w-6 h-6 group-hover:scale-110 transition-transform" />
                 </button>
@@ -345,12 +596,43 @@ export default function GroupDetails() {
             </div>
 
             {/* Stats Overview Grid */}
-            <div className="mt-16 grid grid-cols-2 md:grid-cols-4 gap-6">
+            <div className="mt-16 grid grid-cols-2 md:grid-cols-5 gap-6">
                 <DetailStat icon={<Coins className="w-5 h-5" />} label="Deposit" value={`${formatSTX(group.depositAmount)} STX`} subValue="per cycle" color="teal" />
                 <DetailStat icon={<Users className="w-5 h-5" />} label="Members" value={`${group.currentMembers}/${group.maxMembers || 100}`} subValue="joined" color="lime" />
-                <DetailStat icon={<BarChart className="w-5 h-5" />} label="Cycle" value={`${group.currentCycle} of ${group.maxMembers}`} subValue="in progress" color="blue" />
+                <DetailStat icon={<Clock className="w-5 h-5" />} label="Cycle Time" value={formatCycleDuration(group.cycleDuration)} subValue="per cycle" color="amber" />
+                <DetailStat icon={<BarChart className="w-5 h-5" />} label="Progress" value={`${group.currentCycle} of ${group.maxMembers}`} subValue="cycles done" color="blue" />
                 <DetailStat icon={<DollarSign className="w-5 h-5" />} label="Pool" value={`${formatSTX(group.poolBalance)} STX`} subValue="total stored" color="emerald" />
             </div>
+
+            {/* Creator Admin Panel - Always visible for creators */}
+            {isCreator && (
+              <div className="mt-8 p-6 bg-amber-500/10 border border-amber-500/20 rounded-3xl">
+                <div className="flex items-center space-x-3 mb-4">
+                  <Shield className="w-5 h-5 text-amber-500" />
+                  <span className="text-xs font-black text-amber-500 uppercase tracking-widest">Admin Controls</span>
+                </div>
+                <p className="text-sm text-text-secondary mb-4">You are the creator of this group.</p>
+                
+                {group.status === 'enrollment' && group.currentMembers < 2 && (
+                  <p className="text-xs text-amber-500 italic">At least 2 members needed to start the group.</p>
+                )}
+
+                {/* Re-open Enrollment Button */}
+                {group.status === 'active' && group.isPublic && (
+                   <div className="mt-4">
+                      <button
+                        onClick={handleOpenEnrollment}
+                        disabled={isSubmitting}
+                        className="px-4 py-2 bg-amber-500/20 text-amber-500 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-amber-500/30 transition-colors flex items-center space-x-2"
+                      >
+                         <UserPlus className="w-3 h-3" />
+                         <span>Open Enrollment</span>
+                      </button>
+                      <p className="text-[10px] text-text-tertiary mt-2 italic">Allows new members to join for the next cycle.</p>
+                   </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -436,10 +718,102 @@ export default function GroupDetails() {
                         <span className="text-[10px] font-black text-text-tertiary uppercase tracking-widest">{group.currentMembers} Active Members</span>
                     </div>
 
-                    <div className="text-center py-16 bg-bg-base rounded-3xl">
-                        <Users className="w-12 h-12 text-text-tertiary/40 mx-auto mb-4" />
-                        <p className="text-text-secondary font-medium italic">Member list will be fetched from the blockchain.</p>
-                        <p className="text-text-tertiary text-sm mt-2">This group has {group.currentMembers} members.</p>
+                    {knownMembers.length > 0 ? (
+                        <div className="space-y-4">
+                            {knownMembers.map((mem) => (
+                                <div key={mem.address} className="p-4 bg-bg-base rounded-2xl flex items-center justify-between border border-transparent hover:border-bg-tertiary transition-all">
+                                    <div className="flex items-center space-x-4">
+                                        <div className="w-10 h-10 bg-indigo-500/10 rounded-full flex items-center justify-center text-indigo-500 font-bold">
+                                            {mem.position}
+                                        </div>
+                                        <div>
+                                            <p className="font-bold text-text-base flex items-center gap-2">
+                                                {mem.name}
+                                                {mem.address === group.creator && (
+                                                    <span className="px-2 py-0.5 bg-amber-500/20 text-amber-500 text-[10px] rounded-full uppercase tracking-wider font-black">Creator</span>
+                                                )}
+                                                {mem.address === userAddress && (
+                                                    <span className="px-2 py-0.5 bg-teal-500/20 text-teal-500 text-[10px] rounded-full uppercase tracking-wider font-black">You</span>
+                                                )}
+                                            </p>
+                                            <p className="text-xs text-text-tertiary font-mono">{formatAddress(mem.address)}</p>
+                                        </div>
+                                    </div>
+                                    <div className="text-right">
+                                        <p className="text-xs text-emerald-500 font-bold uppercase tracking-wider">Verified Member</p>
+                                    </div>
+                                </div>
+                            ))}
+                            
+                            <div className="p-4 border-2 border-dashed border-bg-tertiary rounded-2xl text-center">
+                                <p className="text-sm text-text-tertiary italic mb-2">
+                                    + {Math.max(group.currentMembers - knownMembers.length, 0)} other members (not listed)
+                                </p>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="text-center py-16 bg-bg-base rounded-3xl">
+                            <Users className="w-12 h-12 text-text-tertiary/40 mx-auto mb-4" />
+                            <p className="text-text-secondary font-medium italic">No members visible yet.</p>
+                            <p className="text-text-tertiary text-sm mt-2">The contract does not support listing all members directly.</p>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {activeTab === 'History' && (
+                <div className="space-y-8">
+                    <div className="flex items-center justify-between">
+                        <h3 className="text-2xl font-black text-text-base tracking-tight uppercase">Activity History</h3>
+                        <span className="text-[10px] font-black text-text-tertiary uppercase tracking-widest">Your Transactions</span>
+                    </div>
+
+                    <div className="space-y-4">
+                        {/* Cycle Info Card */}
+                        <div className="p-6 bg-bg-base rounded-3xl flex items-center space-x-4">
+                            <div className="w-12 h-12 bg-deep-teal/10 rounded-2xl flex items-center justify-center">
+                                <Clock className="w-6 h-6 text-deep-teal" />
+                            </div>
+                            <div>
+                                <p className="text-[10px] font-black text-text-tertiary uppercase tracking-widest">Cycle Duration</p>
+                                <p className="text-lg font-black text-text-base">{formatCycleDuration(group.cycleDuration)}</p>
+                            </div>
+                        </div>
+
+                        {/* Transaction History List */}
+                        {historyItems.length > 0 ? (
+                            <div className="space-y-3">
+                                {historyItems.map((item, idx) => (
+                                    <div key={idx} className="p-4 bg-bg-base rounded-2xl flex items-center justify-between border border-transparent hover:border-bg-tertiary transition-all">
+                                        <div className="flex items-center space-x-4">
+                                            <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                                                item.type === 'withdrawal' ? 'bg-amber-500/10 text-amber-500' :
+                                                item.type === 'deposit' ? 'bg-teal-500/10 text-teal-500' : 
+                                                'bg-[#AEEF3C]/10 text-deep-teal'
+                                            }`}>
+                                                {item.type === 'deposit' ? <DollarSign className="w-5 h-5" /> : 
+                                                 item.type === 'payout' ? <Zap className="w-5 h-5" /> :
+                                                 <LogOut className="w-5 h-5" />}
+                                            </div>
+                                            <div>
+                                                <p className="font-bold text-text-base capitalize">{item.type}</p>
+                                                <p className="text-xs text-text-tertiary font-mono">Cycle #{item.cycle}</p>
+                                            </div>
+                                        </div>
+                                        <div className="text-right">
+                                            <p className="font-black text-text-base">{formatSTX(item.amount)} STX</p>
+                                            <p className="text-[10px] text-text-tertiary uppercase tracking-wider">{item.status}</p>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="text-center py-16 bg-bg-base rounded-3xl">
+                                <History className="w-12 h-12 text-text-tertiary/40 mx-auto mb-4" />
+                                <p className="text-text-secondary font-medium italic">No transactions found.</p>
+                                <p className="text-text-tertiary text-sm mt-2">Your deposits and payouts will appear here.</p>
+                            </div>
+                        )}
                     </div>
                 </div>
             )}
@@ -447,6 +821,61 @@ export default function GroupDetails() {
         </div>
       </div>
 
+      {/* Withdrawal Confirmation Modal */}
+      <Modal
+          isOpen={showWithdrawModal}
+          onClose={() => setShowWithdrawModal(false)}
+          title="Confirm Withdrawal"
+          maxWidth="md"
+      >
+          <div className="space-y-6">
+              <div className="p-6 bg-emerald-500/10 rounded-3xl border border-emerald-500/20 text-center">
+                  <p className="text-sm font-black text-emerald-600 uppercase tracking-widest mb-2">Total Savings</p>
+                  <p className="text-4xl font-black text-text-base">
+                      {formatSTX(memberData?.totalContributed || 0)} <span className="text-lg text-text-tertiary">STX</span>
+                  </p>
+              </div>
+
+              <p className="text-text-secondary font-medium leading-relaxed">
+                  You are about to withdraw your entire accumulated savings from this group. This action will transfer the funds to your wallet.
+              </p>
+
+              <div className="flex items-center space-x-3 p-4 bg-bg-base rounded-2xl">
+                  <Info className="w-5 h-5 text-text-tertiary flex-shrink-0" />
+                  <p className="text-xs text-text-tertiary">
+                      Network fees will apply. The transaction may take a few minutes to confirm on the Stacks blockchain.
+                  </p>
+              </div>
+
+              <div className="flex space-x-4 pt-4">
+                   <button
+                      onClick={() => setShowWithdrawModal(false)}
+                      disabled={isSubmitting}
+                      className="flex-1 py-4 bg-bg-base text-text-secondary rounded-xl font-bold hover:bg-bg-tertiary transition-colors"
+                  >
+                      Cancel
+                  </button>
+                  <button
+                      onClick={confirmWithdrawal}
+                      disabled={isSubmitting}
+                      className="flex-1 py-4 bg-emerald-500 text-white rounded-xl font-bold hover:bg-emerald-600 transition-colors shadow-lg shadow-emerald-500/20 flex items-center justify-center space-x-2"
+                  >
+                       {isSubmitting ? (
+                          <>
+                              <Loader2 className="w-5 h-5 animate-spin" />
+                              <span>Processing...</span>
+                          </>
+                      ) : (
+                          <>
+                              <LogOut className="w-5 h-5" />
+                              <span>Confirm Withdrawal</span>
+                          </>
+                      )}
+                  </button>
+              </div>
+          </div>
+      </Modal>
+  
       {/* Modals */}
       <Modal isOpen={showJoinModal} onClose={() => setShowJoinModal(false)} title="Join Savings Group" maxWidth="lg">
          <div className="space-y-8">
@@ -460,7 +889,7 @@ export default function GroupDetails() {
                         <p className="text-lg font-black text-text-base uppercase tracking-tight">Position #{group.currentMembers + 1}</p>
                     </div>
                 </div>
-                <p className="text-sm text-text-secondary font-medium italic">By joining, you commit to <span className="font-black text-text-base">{formatSTX(group.depositAmount)} STX</span> every <span className="font-black text-text-base">2 weeks</span>.</p>
+                <p className="text-sm text-text-secondary font-medium italic">By joining, you commit to <span className="font-black text-text-base">{formatSTX(group.depositAmount)} STX</span> every <span className="font-black text-text-base">{formatCycleDuration(group.cycleDuration)}</span>.</p>
             </div>
 
             <div className="space-y-4">
@@ -504,6 +933,7 @@ function DetailStat({ icon, label, value, subValue, color }: { icon: React.React
         lime: 'bg-[#AEEF3C]/10 text-deep-teal dark:text-[#AEEF3C]',
         blue: 'bg-blue-500/10 text-blue-500',
         emerald: 'bg-emerald-500/10 text-emerald-500',
+        amber: 'bg-amber-500/10 text-amber-500',
     }[color] || 'bg-bg-base text-text-tertiary';
 
     return (
@@ -525,7 +955,7 @@ function InfoCard({ title, icon, desc }: { title: string, icon: React.ReactNode,
                 <div className="p-2.5 bg-bg-secondary rounded-xl group-hover:bg-bg-tertiary transition-colors">
                     {icon}
                 </div>
-                <h4 className="font-black text-text-base tracking-tight uppercase text-[10px] tracking-[0.15em]">{title}</h4>
+                <h4 className="font-black text-text-base uppercase text-[10px] tracking-[0.15em]">{title}</h4>
             </div>
             <p className="text-xs text-text-secondary font-medium leading-relaxed italic">{desc}</p>
         </div>

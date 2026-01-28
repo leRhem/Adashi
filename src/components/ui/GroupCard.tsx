@@ -27,14 +27,8 @@ export default function GroupCard(props: GroupCardProps) {
 
   const navigate = useNavigate();
 
-  const handleJoin = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    console.log('Join group', id);
-  };
-
-  const handleViewDetails = () => {
-    // Build a clean group object to pass via state
-    const groupData = {
+  /* Shared group data construction */
+  const getGroupData = () => ({
       id,
       groupName,
       description,
@@ -50,7 +44,22 @@ export default function GroupCard(props: GroupCardProps) {
       enrollmentEndBlock: props.enrollmentEndBlock,
       createdAt: props.createdAt,
       poolBalance: props.poolBalance
-    };
+  });
+
+  const handleJoin = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    console.log('Navigating to join group', id);
+    const groupData = getGroupData();
+    navigate(`/group/${id}`, { 
+      state: { 
+        group: groupData,
+        autoOpenJoin: true 
+      } 
+    });
+  };
+
+  const handleViewDetails = () => {
+    const groupData = getGroupData();
     console.log('Navigating to group details with state:', groupData);
     navigate(`/group/${id}`, { state: { group: groupData } });
   };

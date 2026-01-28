@@ -29,6 +29,8 @@ export interface Member {
   joinedAt: number;
   lastDepositCycle: number;
   hasWithdrawn: boolean;
+  hasReceivedPayout?: boolean;
+  totalContributed?: number;
 }
 
 export interface Transaction {

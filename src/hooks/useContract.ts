@@ -1,20 +1,73 @@
 import { 
   Cl,
   fetchCallReadOnlyFunction,
-  cvToValue,
   cvToHex,
-  hexToCV
+  hexToCV,
+  PostConditionMode,
+  Pc,
+  type PostCondition,
+  type ClarityValue,
+  ClarityType
 } from '@stacks/transactions';
-import type { ClarityValue } from '@stacks/transactions';
 import { STACKS_TESTNET } from '@stacks/network';
-import { openContractCall } from '@stacks/connect';
+import { openContractCall as connectOpenContractCall } from '@stacks/connect';
+import { useToast } from '../context/ToastContext';
 import { useStacksConnect } from './useStacksConnect';
+
+// HELPER: Convert Clarity Value to JS Value
+function cvToValue(val: ClarityValue): any {
+  if (!val) return null;
+  const v = val as any;
+  switch (v.type) {
+    case ClarityType.Int:
+    case ClarityType.UInt:
+      return Number(v.value);
+    case ClarityType.Buffer:
+      // BufferCV value is a string (hex?) or maybe bytes. 
+      // types.d.ts says string. It's likely a hex string or raw string.
+      // If it's a hex string representing text, we might need to decode it.
+      // But usually in Clarity JS SDK v7, value IS the string/content.
+      return v.value; 
+    case ClarityType.BoolTrue:
+      return true;
+    case ClarityType.BoolFalse:
+      return false;
+    case ClarityType.PrincipalStandard:
+    case ClarityType.PrincipalContract:
+      // PrincipalCV has .value (string)
+      return v.value;
+    case ClarityType.ResponseOk:
+      return cvToValue(v.value);
+    case ClarityType.ResponseErr:
+      return cvToValue(v.value);
+    case ClarityType.OptionalNone:
+      return null;
+    case ClarityType.OptionalSome:
+      return cvToValue(v.value);
+    case ClarityType.List:
+      // ListCV has .value (array)
+      return v.value.map(cvToValue);
+    case ClarityType.Tuple:
+      // TupleCV has .value (object key->value)
+      const result: Record<string, any> = {};
+      Object.entries(v.value).forEach(([key, value]) => {
+        result[key] = cvToValue(value as ClarityValue);
+      });
+      return result;
+    case ClarityType.StringASCII:
+    case ClarityType.StringUTF8:
+      // StringCV has .value (string)
+      return v.value;
+    default:
+      return v && typeof v === 'object' && 'value' in v ? v.value : v;
+  }
+}
 
 // =============================================================================
 // CONTRACT CONFIGURATION
 // =============================================================================
-const CONTRACT_ADDRESS = 'ST1M9HB8FHTGZ0TA84TNW6MP9H8P39AYK13H3C9J1';
-const CONTRACT_NAME = 'adashi_v2';
+const CONTRACT_ADDRESS = import.meta.env.VITE_CONTRACT_ADDRESS;
+const CONTRACT_NAME = import.meta.env.VITE_CONTRACT_NAME;
 const network = STACKS_TESTNET;
 
 // =============================================================================
@@ -58,6 +111,7 @@ export interface GroupData {
   enrollmentEndBlock: number;
   autoStartWhenFull: boolean;
   isPublicListed: boolean;
+  groupId?: string;
 }
 
 export interface MemberData {
@@ -82,6 +136,10 @@ export interface ContributionData {
 // =============================================================================
 export function useContract() {
   const { userSession, userAddress } = useStacksConnect();
+  const showToast = useToast();
+  
+  // Use Stacks Connect to open the transaction dialog
+  const openContractCall = connectOpenContractCall;
 
   // Helper to extract the actual value from Clarity response
   const extractValue = (result: any): any => {
@@ -176,7 +234,9 @@ export function useContract() {
     functionName: string,
     functionArgs: ClarityValue[],
     onFinish: (data: any) => void,
-    onCancel?: () => void
+    onCancel?: () => void,
+    postConditions: PostCondition[] = [],
+    postConditionMode: PostConditionMode = PostConditionMode.Allow
   ) => {
     const txOptions = {
       contractAddress: CONTRACT_ADDRESS,
@@ -187,6 +247,8 @@ export function useContract() {
       userSession,
       onFinish,
       onCancel,
+      postConditions,
+      postConditionMode,
       appDetails: {
         name: 'Adashi',
         icon: window.location.origin + '/Logo.png',
@@ -214,8 +276,8 @@ export function useContract() {
    */
   const getPublicGroupIdByIndex = async (index: number): Promise<string | null> => {
     try {
-      // Use Stacks testnet API URL
-      const apiUrl = 'https://api.testnet.hiro.so';
+      // Use Stacks API URL from env
+      const apiUrl = import.meta.env.VITE_API_URL || 'https://api.testnet.hiro.so';
       const url = `${apiUrl}/v2/map_entry/${CONTRACT_ADDRESS}/${CONTRACT_NAME}/public_group_index`;
       
       // Create the key as a Clarity uint
@@ -297,24 +359,24 @@ export function useContract() {
       creator: result.creator,
       name: result.name,
       description: result.description ?? null,
-      depositPerMember: Number(result['deposit-per-member'] || result.deposit_per_member),
-      cycleDurationBlocks: Number(result['cycle-duration-blocks'] || result.cycle_duration_blocks),
-      maxMembers: Number(result['max-members'] || result.max_members),
-      membersCount: Number(result['members-count'] || result.members_count),
-      currentCycle: Number(result['current-cycle'] || result.current_cycle),
-      cycleStartBlock: Number(result['cycle-start-block'] || result.cycle_start_block),
+      depositPerMember: Number(result['deposit-per-member'] ?? result.deposit_per_member ?? result.depositPerMember ?? 0),
+      cycleDurationBlocks: Number(result['cycle-duration-blocks'] ?? result.cycle_duration_blocks ?? result.cycleDurationBlocks ?? 0),
+      maxMembers: Number(result['max-members'] ?? result.max_members ?? result.maxMembers ?? 0),
+      membersCount: Number(result['members-count'] ?? result.members_count ?? result.membersCount ?? 0),
+      currentCycle: Number(result['current-cycle'] ?? result.current_cycle ?? result.currentCycle ?? 0),
+      cycleStartBlock: Number(result['cycle-start-block'] ?? result.cycle_start_block ?? result.cycleStartBlock ?? 0),
       status: Number(result.status),
-      totalPoolBalance: Number(result['total-pool-balance'] || result.total_pool_balance),
-      createdAt: Number(result['created-at'] || result.created_at),
-      groupMode: Number(result['group-mode'] || result.group_mode),
-      pendingModeChange: result['pending-mode-change'] ?? null,
-      modeChangeVotesFor: Number(result['mode-change-votes-for'] || 0),
-      modeChangeVotesAgainst: Number(result['mode-change-votes-against'] || 0),
-      groupType: Number(result['group-type'] || result.group_type),
-      enrollmentPeriodBlocks: Number(result['enrollment-period-blocks'] || 0),
-      enrollmentEndBlock: Number(result['enrollment-end-block'] || 0),
-      autoStartWhenFull: Boolean(result['auto-start-when-full']),
-      isPublicListed: Boolean(result['is-public-listed']),
+      totalPoolBalance: Number(result['total-pool-balance'] ?? result.total_pool_balance ?? result.totalPoolBalance ?? 0),
+      createdAt: Number(result['created-at'] ?? result.created_at ?? result.createdAt ?? 0),
+      groupMode: Number(result['group-mode'] ?? result.group_mode ?? result.groupMode ?? 1),
+      pendingModeChange: result['pending-mode-change'] ?? result.pendingModeChange ?? null,
+      modeChangeVotesFor: Number(result['mode-change-votes-for'] ?? result.modeChangeVotesFor ?? 0),
+      modeChangeVotesAgainst: Number(result['mode-change-votes-against'] ?? result.modeChangeVotesAgainst ?? 0),
+      groupType: Number(result['group-type'] ?? result.group_type ?? result.groupType ?? 1),
+      enrollmentPeriodBlocks: Number(result['enrollment-period-blocks'] ?? result.enrollment_period_blocks ?? 0),
+      enrollmentEndBlock: Number(result['enrollment-end-block'] ?? result.enrollment_end_block ?? 0),
+      autoStartWhenFull: Boolean(result['auto-start-when-full'] ?? result.auto_start_when_full ?? result.autoStartWhenFull ?? false),
+      isPublicListed: Boolean(result['is-public-listed'] ?? result.is_public_listed ?? result.isPublicListed ?? false),
     };
   };
 
@@ -322,21 +384,21 @@ export function useContract() {
    * Get member data within a group
    */
   const getGroupMember = async (groupId: string, memberAddress: string): Promise<MemberData | null> => {
-    const result = await callReadOnly('get-group-member', [
+    const result = await callReadOnly('get-member', [
       Cl.stringUtf8(groupId),
       Cl.principal(memberAddress)
     ]);
     if (!result) return null;
 
     return {
-      memberName: result['member-name'] || result.member_name,
-      payoutPosition: Number(result['payout-position'] || result.payout_position),
-      hasReceivedPayout: Boolean(result['has-received-payout'] || result.has_received_payout),
-      joinedAt: Number(result['joined-at'] || result.joined_at),
-      totalContributed: Number(result['total-contributed'] || result.total_contributed),
-      hasWithdrawn: Boolean(result['has-withdrawn'] || result.has_withdrawn),
-      votedOnModeChange: Boolean(result['voted-on-mode-change'] || result.voted_on_mode_change),
-      voteForModeChange: Boolean(result['vote-for-mode-change'] || result.vote_for_mode_change),
+      memberName: result['member-name'] || result.member_name || result.memberName,
+      payoutPosition: Number(result['payout-position'] || result.payout_position || result.payoutPosition),
+      hasReceivedPayout: Boolean(result['has-received-payout'] || result.has_received_payout || result.hasReceivedPayout),
+      joinedAt: Number(result['joined-at'] || result.joined_at || result.joinedAt),
+      totalContributed: Number(result['total-contributed'] || result.total_contributed || result.totalContributed || 0),
+      hasWithdrawn: Boolean(result['has-withdrawn'] || result.has_withdrawn || result.hasWithdrawn),
+      votedOnModeChange: Boolean(result['voted-on-mode-change'] || result.voted_on_mode_change || result.votedOnModeChange),
+      voteForModeChange: Boolean(result['vote-for-mode-change'] || result.vote_for_mode_change || result.voteForModeChange),
     };
   };
 
@@ -357,8 +419,8 @@ export function useContract() {
 
     return {
       amount: Number(result.amount),
-      paidAtBlock: Number(result['paid-at-block'] || result.paid_at_block),
-      isPaid: Boolean(result['is-paid'] || result.is_paid),
+      paidAtBlock: Number(result['paid-at-block'] || result.paid_at_block || result.paidAtBlock),
+      isPaid: Boolean(result['is-paid'] || result.is_paid || result.isPaid),
     };
   };
 
@@ -458,11 +520,37 @@ export function useContract() {
     onFinish: (data: any) => void,
     onCancel?: () => void
   ) => {
+    if (!userAddress) return;
+    
+    // Fetch group to get precise deposit amount
+    const group = await getGroup(groupId);
+    if (!group) {
+        console.error('Group not found for deposit post-condition');
+        return;
+    }
+    
+    if (group.depositPerMember === 0) {
+        console.warn('WARN: Deposit amount is 0, might cause transaction issues if contract requires payment.');
+        showToast({
+          type: 'warning',
+          title: 'Zero Deposit Detected',
+          message: 'The system detected a 0 STX deposit requirement. If this is incorrect, the transaction may fail.',
+        });
+    }
+
+    const postConditions = [
+        Pc.principal(userAddress)
+          .willSendEq(group.depositPerMember)
+          .ustx()
+    ];
+
     await callContract(
       'deposit',
       [Cl.stringUtf8(groupId)],
       onFinish,
-      onCancel
+      onCancel,
+      postConditions,
+      PostConditionMode.Deny
     );
   };
 
@@ -474,11 +562,111 @@ export function useContract() {
     onFinish: (data: any) => void,
     onCancel?: () => void
   ) => {
+    // Fetch group to calculate payout amount
+    const group = await getGroup(groupId);
+    if (!group) {
+       console.error('Failed to fetch group for Payout Amount calculation');
+       return;
+    }
+
+    // Total Pot = members * deposit per member
+    const payoutAmount = group.membersCount * group.depositPerMember;
+    
+    console.log('DEBUG: Claim Payout Check', { 
+        members: group.membersCount, 
+        deposit: group.depositPerMember, 
+        total: payoutAmount,
+        rawGroup: group 
+    });
+
+    // Check if it's the user's turn
+    const member = await getGroupMember(groupId, userAddress);
+    if (!member) {
+        console.error('Member data not found for Payout validation');
+        return;
+    }
+
+    if (group.currentCycle !== member.payoutPosition) {
+        showToast({
+            type: 'error',
+            title: 'Not Your Turn',
+            message: `You can only claim payout in Cycle #${member.payoutPosition}. Current Cycle is #${group.currentCycle}.`,
+        });
+        if (onCancel) onCancel();
+        return;
+    }
+
+    if (payoutAmount === 0) {
+        console.error('CRITICAL: Calculated Payout Amount is 0. Aborting to prevent Post-Condition failure.');
+        showToast({
+            type: 'error',
+            title: 'Payout Calculation Failed',
+            message: 'Unable to calculate payout amount (0). Please verify group data.',
+            action: { label: 'Retry', onClick: () => window.location.reload() }
+        });
+        if (onCancel) onCancel();
+        return;
+    }
+
+
+
+    // Check Block Height (Time)
+    // We assume access to current block height. If not standard, we skip or fetch it.
+    // For now, let's try to be smart about it or just rely on contract error if we can't easily get height.
+    // BUT since we want to prevent the "Allowed" feeling, let's fetch it.
+    try {
+        let apiUrl = import.meta.env.VITE_API_URL;
+        if (!apiUrl) {
+            if (import.meta.env.PROD) {
+                throw new Error('CRITICAL: VITE_API_URL is missing in production environment. Cannot default to testnet.');
+            } else {
+                console.warn('VITE_API_URL missing, falling back to testnet API: https://api.testnet.hiro.so');
+                apiUrl = 'https://api.testnet.hiro.so';
+            }
+        }
+        const infoUrl = `${apiUrl}/v2/info`;
+        const infoRes = await fetch(infoUrl);
+        const infoData = await infoRes.json();
+        const currentBlockHeight = infoData.stacks_tip_height;
+
+        const cycleDeadline = group.cycleStartBlock + group.cycleDurationBlocks;
+        
+        if (currentBlockHeight < cycleDeadline) {
+             const blocksRemaining = cycleDeadline - currentBlockHeight;
+             const minutesRemaining = blocksRemaining * 10;
+             const days = Math.floor(minutesRemaining / 1440);
+             const hours = Math.floor((minutesRemaining % 1440) / 60);
+
+             let timeString = '';
+             if (days > 0) timeString += `${days} days `;
+             if (hours > 0) timeString += `${hours} hours`;
+             if (timeString === '') timeString = 'less than 1 hour';
+
+             showToast({
+                type: 'error',
+                title: 'Cycle Not Ended',
+                message: `You must wait for the cycle to complete. Remaining time: ~${timeString} (${blocksRemaining} blocks).`,
+            });
+            if (onCancel) onCancel();
+            return;
+        }
+    } catch (err) {
+        console.warn('Could not fetch block height for validation, proceeding with contract check:', err);
+    }
+
+    const postConditions = [
+        Pc.principal(`${CONTRACT_ADDRESS}.${CONTRACT_NAME}`)
+          .willSendEq(payoutAmount)
+          .ustx()
+    ];
+
     await callContract(
       'claim-payout',
       [Cl.stringUtf8(groupId)],
       onFinish,
-      onCancel
+      onCancel,
+      postConditions,
+      PostConditionMode.Deny
     );
   };
 
@@ -490,11 +678,57 @@ export function useContract() {
     onFinish: (data: any) => void,
     onCancel?: () => void
   ) => {
+    if (!userAddress) return;
+
+    // Fetch member data to get total contributed
+    const member = await getGroupMember(groupId, userAddress);
+    if (!member) {
+        console.error('Member data not found for withdrawal post-condition');
+        return;
+    }
+
+    console.log('DEBUG: Withdrawal Check', { totalContributed: member.totalContributed });
+    
+    // Check Status
+    const group = await getGroup(groupId);
+    if (!group) return;
+
+    if (group.status !== STATUS_WITHDRAWAL_OPEN) {
+        showToast({
+            type: 'error',
+            title: 'Withdrawal Not Active',
+            message: 'You can only withdraw savings after the group cycle is completed and withdrawal is opened.',
+        });
+        if (onCancel) onCancel();
+        return;
+    }
+    
+    if (member.totalContributed === 0) {
+        console.warn('WARN: Withdrawal amount is 0.');
+        showToast({
+            type: 'warning',
+            title: 'Empty Withdrawal',
+            message: 'You have no contributions to withdraw.',
+        });
+        // We might want to allow it if the contract cleans up state? But usually not useful.
+        // Returning to be safe.
+        if (onCancel) onCancel();
+        return;
+    }
+
+    const postConditions = [
+        Pc.principal(`${CONTRACT_ADDRESS}.${CONTRACT_NAME}`)
+          .willSendEq(member.totalContributed)
+          .ustx()
+    ];
+
     await callContract(
       'withdraw-savings',
       [Cl.stringUtf8(groupId)],
       onFinish,
-      onCancel
+      onCancel,
+      postConditions,
+      PostConditionMode.Deny
     );
   };
 

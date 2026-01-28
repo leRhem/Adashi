@@ -56,7 +56,7 @@
 ;; CONSTANTS - Status Codes
 ;; ============================================================================
 
-(define-constant STATUS_ENROLLMENT u0)
+(define-constant STATUS_ENROLLMENT u0)      ;; Public groups accepting members
 (define-constant STATUS_ACTIVE u1)
 (define-constant STATUS_COMPLETED u2)
 (define-constant STATUS_PAUSED u3)
@@ -66,7 +66,9 @@
 (define-constant MAX_MEMBERS_LIMIT u100)
 
 ;; Grace period in blocks (approximately 10 days = 1440 blocks)
+;; PLUS 2-block safety buffer to prevent edge-case timing failures
 (define-constant GRACE_PERIOD_BLOCKS u1440)
+(define-constant GRACE_SAFETY_BUFFER u2)  ;; NEW: 2-block buffer
 
 ;; ============================================================================
 ;; DATA STRUCTURES
@@ -81,22 +83,25 @@
     description: (optional (string-utf8 256)),
     deposit_per_member: uint,
     cycle_duration_blocks: uint,
-    max_members: uint,
+    max_members: uint,  ;; 0 = unlimited (capped at MAX_MEMBERS_LIMIT)
     members_count: uint,
     current_cycle: uint,
     cycle_start_block: uint,
     status: uint,
     total_pool_balance: uint,
     created_at: uint,
+    ;; Multi-model support
     group_mode: uint,
+    ;; Mode change voting
     pending_mode_change: (optional uint),
     mode_change_votes_for: uint,
     mode_change_votes_against: uint,
-    group_type: uint,
-    enrollment_period_blocks: uint,
-    enrollment_end_block: uint,
-    auto_start_when_full: bool,
-    is_public_listed: bool
+    ;; NEW: Public/Private
+    group_type: uint,  ;; 1=Private, 2=Public
+    enrollment_period_blocks: uint,  ;; How long enrollment stays open
+    enrollment_end_block: uint,  ;; When current enrollment closes
+    auto_start_when_full: bool,  ;; Start automatically when full?
+    is_public_listed: bool  ;; Show in public listings?
   }
 )
 
@@ -132,10 +137,10 @@
   }
 )
 
-;; Track public groups for discovery
+;; NEW: Track public groups for discovery
 (define-map public_group_index
-  uint
-  (string-utf8 50)
+  uint  ;; Sequential index
+  (string-utf8 50)  ;; group_id
 )
 
 (define-data-var public-group-count uint u0)
@@ -174,7 +179,7 @@
 )
 
 (define-private (get-grace-period-deadline (group_id (string-utf8 50)))
-  (+ (get-current-cycle-deadline group_id) GRACE_PERIOD_BLOCKS)
+  (+ (get-current-cycle-deadline group_id) GRACE_PERIOD_BLOCKS GRACE_SAFETY_BUFFER)
 )
 
 (define-private (is-valid-mode (mode uint))
@@ -219,7 +224,7 @@
   )
 )
 
-;; Check if enrollment is open
+;; NEW: Check if enrollment is open
 (define-private (is-enrollment-open (group_id (string-utf8 50)))
   (match (map-get? groups { group_id: group_id })
     group-data
@@ -231,7 +236,7 @@
   )
 )
 
-;; Get effective max members (handle unlimited = 0)
+;; NEW: Get effective max members (handle unlimited = 0)
 (define-private (get-effective-max-members (max_members uint))
   (if (is-eq max_members u0)
     MAX_MEMBERS_LIMIT
@@ -242,7 +247,7 @@
   )
 )
 
-;; Check if group is full
+;; NEW: Check if group is full
 (define-private (is-group-full (group_id (string-utf8 50)))
   (match (map-get? groups { group_id: group_id })
     group-data
@@ -314,7 +319,7 @@
   )
 )
 
-;; Create a PUBLIC group (users can join themselves)
+;; NEW: Create a PUBLIC group (users can join themselves)
 (define-public (create-public-group
   (group_id (string-utf8 50))
   (name (string-utf8 100))
@@ -353,7 +358,7 @@
         members_count: u0,
         current_cycle: u0,
         cycle_start_block: stacks-block-height,
-        status: STATUS_ENROLLMENT,
+        status: STATUS_ENROLLMENT,  ;; Start in enrollment mode
         total_pool_balance: u0,
         created_at: stacks-block-height,
         group_mode: group_mode,
@@ -437,7 +442,7 @@
 ;; PUBLIC FUNCTIONS - Membership (Public Groups)
 ;; ============================================================================
 
-;; Join a PUBLIC group (self-service)
+;; NEW: Join a PUBLIC group (self-service) - RACE CONDITION SAFE
 (define-public (join-public-group
   (group_id (string-utf8 50))
   (member_name (string-utf8 100))
@@ -447,10 +452,9 @@
     (let
       (
         (current-members (get members_count group-data))
-        (next-position (+ current-members u1))
         (effective-max (get-effective-max-members (get max_members group-data)))
       )
-      ;; Validations
+      ;; Validations BEFORE incrementing
       (asserts! (is-eq (get group_type group-data) GROUP_TYPE_PUBLIC) ERR_INVALID_GROUP_TYPE)
       (asserts! (is-enrollment-open group_id) ERR_ENROLLMENT_CLOSED)
       (asserts! 
@@ -459,52 +463,60 @@
       )
       (asserts! (< current-members effective-max) ERR_MAX_MEMBERS)
 
-      ;; Add member with auto-assigned position (FIFO)
-      (map-set group_members
-        { group_id: group_id, member_address: tx-sender }
-        {
-          member_name: member_name,
-          payout_position: next-position,
-          has_received_payout: false,
-          joined_at: stacks-block-height,
-          total_contributed: u0,
-          has_withdrawn: false,
-          voted_on_mode_change: false,
-          vote_for_mode_change: false
-        }
-      )
-
-      ;; Update group member count
+      ;; ATOMIC INCREMENT: Update count FIRST
       (map-set groups
         { group_id: group_id }
-        (merge group-data { members_count: next-position })
+        (merge group-data { members_count: (+ current-members u1) })
       )
 
-      ;; Check if should auto-start
-      (if (and 
-            (get auto_start_when_full group-data)
-            (is-eq next-position effective-max))
-        ;; Group is full and auto-start enabled
-        (map-set groups
-          { group_id: group_id }
-          (merge (unwrap-panic (map-get? groups { group_id: group_id }))
-            {
-              status: STATUS_ACTIVE,
-              current_cycle: u1,
-              cycle_start_block: stacks-block-height
-            }
-          )
+      ;; READ-AFTER-WRITE: Get the ACTUAL position from updated group
+      (let
+        (
+          (updated-group-data (unwrap-panic (map-get? groups { group_id: group_id })))
+          (assigned-position (get members_count updated-group-data))
         )
-        true  ;; Do nothing if not full yet
-      )
+        
+        ;; Add member with GUARANTEED unique position
+        (map-set group_members
+          { group_id: group_id, member_address: tx-sender }
+          {
+            member_name: member_name,
+            payout_position: assigned-position,  ;; Position from atomic increment
+            has_received_payout: false,
+            joined_at: stacks-block-height,
+            total_contributed: u0,
+            has_withdrawn: false,
+            voted_on_mode_change: false,
+            vote_for_mode_change: false
+          }
+        )
 
-      (ok true)
+        ;; Check if should auto-start
+        (if (and 
+              (get auto_start_when_full group-data)
+              (is-eq assigned-position effective-max))
+          ;; Group is full and auto-start enabled
+          (map-set groups
+            { group_id: group_id }
+            (merge (unwrap-panic (map-get? groups { group_id: group_id }))
+              {
+                status: STATUS_ACTIVE,
+                current_cycle: u1,
+                cycle_start_block: stacks-block-height
+              }
+            )
+          )
+          true  ;; Do nothing if not full yet
+        )
+
+        (ok true)
+      )
     )
     ERR_GROUP_NOT_FOUND
   )
 )
 
-;; Open new enrollment period (for public groups between cycles)
+;; NEW: Open new enrollment period (for public groups between cycles)
 (define-public (open-enrollment-period
   (group_id (string-utf8 50))
   (enrollment_period_blocks uint)
@@ -534,7 +546,7 @@
   )
 )
 
-;; Close enrollment and start cycle (manual trigger)
+;; NEW: Close enrollment and start cycle (manual trigger)
 (define-public (close-enrollment-and-start
   (group_id (string-utf8 50))
 )
@@ -600,7 +612,7 @@
 )
 
 ;; ============================================================================
-;; PUBLIC FUNCTIONS - Contributions (Same for Public & Private Groups)
+;; PUBLIC FUNCTIONS - Contributions (Same for Public & Private)
 ;; ============================================================================
 
 ;; Member deposits their contribution for current cycle
@@ -667,9 +679,10 @@
 
 ;; ============================================================================
 ;; PUBLIC FUNCTIONS - Payouts & Withdrawals
+;; (Same as V2 - including claim-payout, withdraw-savings, etc.)
 ;; ============================================================================
 
-;; Member claims their payout when it's their turn
+;; Member claims their payout when it's their turn (Model 1 only)
 (define-public (claim-payout (group_id (string-utf8 50)))
   (match (map-get? groups { group_id: group_id })
     group-data
@@ -684,6 +697,10 @@
         ;; Validations
         (asserts! (is-eq (get group_mode group-data) MODE_TRADITIONAL_ROSCA) ERR_INVALID_MODE)
         (asserts! (is-eq (get status group-data) STATUS_ACTIVE) ERR_GROUP_COMPLETED)
+        
+        ;; NEW: Time Check - prevent early claiming
+        (asserts! (>= stacks-block-height (get-current-cycle-deadline group_id)) ERR_NOT_TIME_YET)
+
         (asserts! 
           (is-eq (get payout_position member-data) current_cycle)
           ERR_NOT_YOUR_TURN
@@ -736,7 +753,7 @@
   )
 )
 
-;; Open withdrawal window after all cycles complete
+;; Open withdrawal window after all cycles complete (Model 2)
 (define-public (open-withdrawal-window (group_id (string-utf8 50)))
   (match (map-get? groups { group_id: group_id })
     group-data
@@ -765,7 +782,7 @@
   )
 )
 
-;; Member withdraws their total contributions
+;; Member withdraws their total contributions (Model 2)
 (define-public (withdraw-savings (group_id (string-utf8 50)))
   (match (map-get? groups { group_id: group_id })
     group-data
@@ -850,7 +867,7 @@
   )
 )
 
-;; Existing read-only functions
+;; Existing read-only functions from V2
 (define-read-only (get-group (group_id (string-utf8 50)))
   (map-get? groups { group_id: group_id })
 )
