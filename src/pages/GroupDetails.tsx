@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { 
   ArrowLeft, Share2, UserPlus, DollarSign, 
@@ -54,10 +54,25 @@ export default function GroupDetails() {
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [memberName, setMemberName] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // Ref to prevent duplicate/concurrent fetches
+  const isFetchingRef = useRef(false);
+  const lastFetchParamsRef = useRef<string>('');
 
   // Get group data from router state (passed from GroupCard)
   // Get group data
-  const refetchGroupData = useCallback(async () => {
+  const refetchGroupData = useCallback(async (force: boolean = false) => {
+      // Prevent concurrent fetches
+      const fetchParams = `${groupId}-${userAddress}`;
+      if (isFetchingRef.current) {
+        return; // Already fetching, skip
+      }
+      if (!force && lastFetchParamsRef.current === fetchParams) {
+        return; // Params unchanged and not forced, skip
+      }
+      
+      isFetchingRef.current = true;
+      lastFetchParamsRef.current = fetchParams;
       setError(null);
       
       try {
@@ -155,13 +170,17 @@ export default function GroupDetails() {
       } catch (err) {
         console.error('Error fetching group:', err);
         setError('Failed to load group data');
+      } finally {
+        isFetchingRef.current = false;
       }
-  }, [groupId, userAddress, location.state, getGroup, getGroupMember]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupId, userAddress]);
 
   useEffect(() => {
+    if (!groupId) return;
     setIsLoading(true);
     refetchGroupData().finally(() => setIsLoading(false));
-  }, [refetchGroupData]);
+  }, [refetchGroupData, groupId]);
 
 
 
@@ -258,77 +277,67 @@ export default function GroupDetails() {
     }
   }, [location.state, isMember, group]);
 
+  // Helper to execute contract actions with consistent state management
+  const executeAction = useCallback(async (
+    actionName: string,
+    action: () => Promise<void>
+  ) => {
+    setIsSubmitting(true);
+    try {
+      await action();
+    } catch (err) {
+      console.error(`Error in ${actionName}:`, err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, []);
+
   // Handle join group
   const handleJoinGroup = async () => {
     if (!groupId || !memberName.trim()) return;
     
-    setIsSubmitting(true);
-    try {
-      await joinPublicGroup(
+    await executeAction('joinGroup', () => 
+      joinPublicGroup(
         groupId,
         memberName,
-        async (data) => {
-          console.log('Joined group successfully:', data);
+        async () => {
           setShowJoinModal(false);
           setIsMember(true);
-          // Refresh group data
-          await refetchGroupData();
-          setIsSubmitting(false);
+          await refetchGroupData(true);
         },
-        () => {
-          setIsSubmitting(false);
-        }
-      );
-    } catch (err) {
-      console.error('Error joining group:', err);
-      setIsSubmitting(false);
-    }
+        () => {} // Failure handled by executeAction
+      )
+    );
   };
 
   // Handle deposit
   const handleDeposit = async () => {
     if (!groupId) return;
     
-    setIsSubmitting(true);
-    try {
-      await deposit(
+    await executeAction('deposit', () =>
+      deposit(
         groupId,
-        async (data) => {
-          console.log('Deposit successful:', data);
-          await refetchGroupData();
-          setIsSubmitting(false);
+        async () => {
+          await refetchGroupData(true);
         },
-        () => {
-          setIsSubmitting(false);
-        }
-      );
-    } catch (err) {
-      console.error('Error making deposit:', err);
-      setIsSubmitting(false);
-    }
+        () => {}
+      )
+    );
   };
 
   // Handle claim payout
   const handleClaimPayout = async () => {
     if (!groupId) return;
     
-    setIsSubmitting(true);
-    try {
-      await claimPayout(
+    await executeAction('claimPayout', () =>
+      claimPayout(
         groupId,
-        async (data) => {
-          console.log('Payout claimed:', data);
-          await refetchGroupData();
-          setIsSubmitting(false);
+        async () => {
+          await refetchGroupData(true);
         },
-        () => {
-          setIsSubmitting(false);
-        }
-      );
-    } catch (err) {
-      console.error('Error claiming payout:', err);
-      setIsSubmitting(false);
-    }
+        () => {}
+      )
+    );
   };
 
   // Handle withdraw savings (Collective mode)
@@ -340,74 +349,49 @@ export default function GroupDetails() {
 
   // Execute withdrawal
   const confirmWithdrawal = async () => {
-     if (!groupId) return;
+    if (!groupId) return;
     
-    setIsSubmitting(true);
-    try {
-      await withdrawSavings(
+    await executeAction('withdrawSavings', () =>
+      withdrawSavings(
         groupId,
-        async (data) => {
-          console.log('Savings withdrawn:', data);
+        async () => {
           setShowWithdrawModal(false);
-          await refetchGroupData();
-          setIsSubmitting(false);
+          await refetchGroupData(true);
         },
-        () => {
-          setIsSubmitting(false);
-        }
-      );
-    } catch (err) {
-      console.error('Error withdrawing savings:', err);
-      setIsSubmitting(false);
-    }
+        () => {}
+      )
+    );
   };
 
   // Handle start group (Creator only - close enrollment and start)
   const handleStartGroup = async () => {
     if (!groupId || !isCreator) return;
     
-    setIsSubmitting(true);
-    try {
-      await closeEnrollmentAndStart(
+    await executeAction('startGroup', () =>
+      closeEnrollmentAndStart(
         groupId,
-        async (data) => {
-          console.log('Group started:', data);
-          await refetchGroupData();
-          setIsSubmitting(false);
+        async () => {
+          await refetchGroupData(true);
         },
-        () => {
-          setIsSubmitting(false);
-        }
-      );
-    } catch (err) {
-      console.error('Error starting group:', err);
-      setIsSubmitting(false);
-    }
+        () => {}
+      )
+    );
   };
 
   // Handle open enrollment (Creator only - between cycles)
   const handleOpenEnrollment = async () => {
     if (!groupId || !isCreator) return;
     
-    setIsSubmitting(true);
-    try {
-      // Default to same duration as cycle for now (could be a modal input)
-      await openEnrollmentPeriod(
+    await executeAction('openEnrollment', () =>
+      openEnrollmentPeriod(
         groupId,
         144, // approx 24 hours
-        async (data) => {
-          console.log('Enrollment opened:', data);
-          await refetchGroupData();
-          setIsSubmitting(false);
+        async () => {
+          await refetchGroupData(true);
         },
-        () => {
-          setIsSubmitting(false);
-        }
-      );
-    } catch (err) {
-      console.error('Error opening enrollment:', err);
-      setIsSubmitting(false);
-    }
+        () => {}
+      )
+    );
   };
 
   // Loading state
