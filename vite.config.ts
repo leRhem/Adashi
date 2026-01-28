@@ -9,7 +9,6 @@ export default defineConfig({
     tailwindcss()
   ],
   define: {
-    global: 'globalThis',
-    process: '({})',
+    'process.env': {},
   },
 })

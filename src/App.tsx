@@ -3,14 +3,38 @@ import LandingPage from './pages/LandingPage';
 import BrowsePage from './pages/BrowsePage';
 import Dashboard from './pages/Dashboard';
 import GroupDetails from './pages/GroupDetails';
-import CreateGroup from './pages/CreateGroup';
 import Header from './components/layout/Header';
 import { useStacksConnect } from './hooks/useStacksConnect';
 import './App.css';
 
-function App() {
-  const { isConnected } = useStacksConnect();
+// Loading spinner component for protected routes
+function LoadingSpinner() {
+  return (
+    <div className="min-h-screen bg-bg-primary flex flex-col items-center justify-center">
+      <div className="flex flex-col items-center space-y-4">
+        <div className="w-12 h-12 border-4 border-teal-600 border-t-transparent rounded-full animate-spin"></div>
+        <p className="text-text-secondary font-medium animate-pulse">Checking wallet connection...</p>
+      </div>
+    </div>
+  );
+}
 
+// Protected route wrapper that shows loading during auth check
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { isConnected, isLoading } = useStacksConnect();
+  
+  if (isLoading) {
+    return <LoadingSpinner />;
+  }
+  
+  if (!isConnected) {
+    return <Navigate to="/" />;
+  }
+  
+  return <>{children}</>;
+}
+
+function App() {
   return (
     <Router>
       <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -21,16 +45,15 @@ function App() {
             <Route path="/browse" element={<BrowsePage />} />
             <Route 
               path="/dashboard" 
-              element={isConnected ? <Dashboard /> : <Navigate to="/" />} 
+              element={
+                <ProtectedRoute>
+                  <Dashboard />
+                </ProtectedRoute>
+              } 
             />
             <Route path="/group/:id" element={<GroupDetails />} />
-            <Route 
-              path="/create" 
-              element={isConnected ? <CreateGroup /> : <Navigate to="/" />} 
-            />
           </Routes>
         </main>
-        {/* Footer could go here */}
       </div>
     </Router>
   );

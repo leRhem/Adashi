@@ -1,120 +1,179 @@
-import { useState } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { 
-  Users, TrendingUp, AlertCircle, Award, 
-  PlusCircle, Search, Bell, ArrowRight, DollarSign 
+  AlertCircle,
+  PlusCircle, Search, Bell, ArrowRight,
+  Briefcase, Wallet, Loader2
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import GroupCard from '../components/ui/GroupCard';
-import type { Group } from '../types';
+import StatsCreditCard from '../components/ui/StatsCreditCard';
+import CreateGroupModal from '../components/modals/CreateGroupModal';
+import type { Group, GroupMode, GroupStatus } from '../types';
 import { useStacksConnect } from '../hooks/useStacksConnect';
-
-// Mock data for user's groups
-const MY_GROUPS: Group[] = [
-  {
-    id: '2',
-    groupName: 'Summer Vacay Pool',
-    description: 'Saving for that epic summer trip to Bali. Join us!',
-    creator: 'ST2HQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-    depositAmount: 200000000, 
-    currentMembers: 15,
-    maxMembers: 20,
-    cycleDuration: 144 * 14,
-    status: 'active',
-    isPublic: true,
-    mode: 2,
-    currentCycle: 3,
-    enrollmentEndBlock: 120000,
-    createdAt: Date.now() - 1000000,
-    poolBalance: 4000000000
-  },
-  {
-    id: '5',
-    groupName: 'Family Savings',
-    description: 'Private group for family collective savings.',
-    creator: 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM',
-    depositAmount: 100000000, 
-    currentMembers: 4,
-    maxMembers: 4,
-    cycleDuration: 144 * 30,
-    status: 'active',
-    isPublic: false,
-    mode: 2,
-    currentCycle: 1,
-    enrollmentEndBlock: 0,
-    createdAt: Date.now(),
-    poolBalance: 400000000
-  }
-];
+import { useContract, STATUS_ENROLLMENT, STATUS_ACTIVE } from '../hooks/useContract';
 
 export default function Dashboard() {
-  const { userData } = useStacksConnect();
+  const { userData, userAddress } = useStacksConnect();
+  const { getPublicGroupCount, getPublicGroupByIndex, getGroupMember } = useContract();
+  
+  const [myGroups, setMyGroups] = useState<Group[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('active');
+  const [isCreateModalOpen, setCreateModalOpen] = useState(false);
   const navigate = useNavigate();
 
-  const stats = [
-    { label: 'Active Groups', value: '2', icon: Users, color: 'blue' },
-    { label: 'Total Saved', value: '4,500 STX', icon: TrendingUp, color: 'emerald' },
-    { label: 'Pending Actions', value: '1', icon: AlertCircle, color: 'amber' },
-    { label: 'Total Received', value: '0 STX', icon: Award, color: 'purple' },
-  ];
+  // Fetch user's groups from contract (both created AND joined)
+  useEffect(() => {
+    const fetchMyGroups = async () => {
+      if (!userAddress) {
+        setIsLoading(false);
+        return;
+      }
+      
+      setIsLoading(true);
+      try {
+        const count = await getPublicGroupCount();
+        console.log('Public group count:', count);
+        const userGroups: Group[] = [];
+        
+        for (let i = 0; i < count; i++) {
+          const groupData = await getPublicGroupByIndex(i);
+          console.log(`Group ${i}:`, groupData);
+          
+          if (groupData && groupData.groupId) {
+            // Check if user is creator
+            const isCreator = groupData.creator === userAddress;
+            
+            // Check if user is a member (only if not creator to avoid duplicate check)
+            let isMember = false;
+            if (!isCreator) {
+              try {
+                const memberData = await getGroupMember(groupData.groupId, userAddress);
+                isMember = memberData !== null;
+                console.log(`Membership check for ${groupData.groupId}:`, isMember);
+              } catch (err) {
+                console.error(`Error checking membership for ${groupData.groupId}:`, err);
+              }
+            }
+            
+            // Include group if user is creator OR member
+            if (isCreator || isMember) {
+              const statusMap: Record<number, GroupStatus> = {
+                [STATUS_ENROLLMENT]: 'enrollment',
+                [STATUS_ACTIVE]: 'active',
+                2: 'completed',
+                3: 'paused',
+                4: 'withdrawal_open'
+              };
+              
+              userGroups.push({
+                id: groupData.groupId,
+                groupName: groupData.name,
+                description: groupData.description || '',
+                creator: groupData.creator,
+                depositAmount: groupData.depositPerMember,
+                currentMembers: groupData.membersCount,
+                maxMembers: groupData.maxMembers,
+                cycleDuration: groupData.cycleDurationBlocks,
+                status: statusMap[groupData.status] || 'enrollment',
+                isPublic: groupData.isPublicListed,
+                mode: groupData.groupMode as GroupMode,
+                currentCycle: groupData.currentCycle,
+                enrollmentEndBlock: groupData.enrollmentEndBlock,
+                createdAt: groupData.createdAt,
+                poolBalance: groupData.totalPoolBalance
+              });
+            }
+          }
+        }
+        
+        console.log('User groups found:', userGroups.length);
+        setMyGroups(userGroups);
+      } catch (err) {
+        console.error('Error fetching user groups:', err);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    
+    fetchMyGroups();
+  }, [userAddress]);
+
+  // TODO: Implement withdraw with proper group context
+  const handleWithdraw = async () => {
+    const groupId = window.prompt('Enter Group ID to withdraw from:');
+    if (groupId) {
+      console.log('Withdraw from group:', groupId);
+      // Placeholder for future: withdrawSavings(groupId, onFinish, onCancel)
+    }
+  };
+
+  const filteredGroups = useMemo(() => {
+    return myGroups.filter(group => {
+      if (activeTab === 'active') return group.status === 'active';
+      if (activeTab === 'pending') return group.status === 'enrollment';
+      if (activeTab === 'completed') return group.status === 'completed';
+      return true;
+    });
+  }, [myGroups, activeTab]);
 
   return (
-    <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-bg-base py-24 px-4 sm:px-6 lg:px-8 transition-colors duration-300">
       <div className="max-w-7xl mx-auto">
         {/* Header Section */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-8 mb-12">
           <div>
-            <h1 className="text-4xl font-black text-gray-900 tracking-tight mb-2">
+            <h1 className="text-4xl font-black text-text-base tracking-tight mb-2">
               Welcome back, {userData?.profile?.name || 'Saver'}!
             </h1>
-            <p className="text-gray-500 font-medium">
-              You have <span className="text-primary-600 font-bold">1 action</span> requiring your attention today.
+            <p className="text-text-secondary font-medium flex items-center space-x-2">
+              <AlertCircle className="w-4 h-4 text-[#AEEF3C]" />
+              <span>You have <span className="text-[#AEEF3C] font-bold">1 action</span> requiring your attention today.</span>
             </p>
           </div>
 
           <div className="flex space-x-4">
             <button 
-              onClick={() => navigate('/create')}
-              className="px-6 py-4 bg-primary-600 text-white rounded-2xl font-bold hover:bg-primary-700 transition-all shadow-xl shadow-primary-500/20 flex items-center space-x-2 transform active:scale-95"
+              onClick={() => setCreateModalOpen(true)}
+              className="px-6 py-4 bg-[#AEEF3C] text-[#0A1628] rounded-2xl font-bold hover:scale-105 transition-all shadow-xl shadow-[#AEEF3C]/20 flex items-center space-x-2 transform active:scale-95"
             >
               <PlusCircle className="w-5 h-5" />
               <span>Create Group</span>
             </button>
-            <button className="p-4 bg-white border border-gray-100 rounded-2xl shadow-sm hover:bg-gray-50 transition-colors relative">
-              <Bell className="w-6 h-6 text-gray-400" />
-              <div className="absolute top-3.5 right-4 w-2 h-2 bg-error-500 rounded-full border-2 border-white" />
+            <button className="p-4 bg-bg-secondary rounded-2xl shadow-sm hover:bg-white/10 transition-colors relative transform active:scale-95">
+              <Bell className="w-6 h-6 text-text-tertiary" />
+              <div className="absolute top-4 right-4 w-2 h-2 bg-rose-500 rounded-full" />
             </button>
           </div>
         </div>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
-          {stats.map((stat, i) => (
-            <div key={i} className="bg-white p-8 rounded-[32px] shadow-sm border border-gray-100 hover:shadow-xl hover:shadow-gray-200/50 transition-all">
-              <div className={`w-14 h-14 bg-${stat.color === 'emerald' ? 'success' : stat.color === 'amber' ? 'warning' : stat.color}-50 rounded-2xl flex items-center justify-center mb-6`}>
-                <stat.icon className={`w-7 h-7 text-${stat.color === 'emerald' ? 'success' : stat.color === 'amber' ? 'warning' : stat.color}-600`} />
-              </div>
-              <p className="text-3xl font-black text-gray-900 mb-2">{stat.value}</p>
-              <p className="text-xs font-black text-gray-400 uppercase tracking-widest">{stat.label}</p>
-            </div>
-          ))}
+        {/* Unified Stats Card */}
+        <div className="mb-12">
+          <StatsCreditCard 
+            balance={myGroups.reduce((sum, g) => sum + (g.poolBalance ?? 0), 0) / 1000000} 
+            activeGroups={myGroups.filter(g => g.status === 'active' || g.status === 'enrollment').length} 
+            pendingActions={myGroups.filter(g => g.status === 'enrollment').length} 
+            totalReceived={0}
+            userAddress={userAddress}
+            onWithdraw={handleWithdraw}
+          />
         </div>
 
         {/* Pending Action Card */}
-        <div className="mb-12 bg-gradient-to-r from-amber-500 to-amber-600 p-8 rounded-[40px] shadow-2xl shadow-amber-500/20 text-white relative overflow-hidden group cursor-pointer">
+        <div className="mb-12 bg-deep-teal p-8 rounded-[40px] shadow-2xl shadow-deep-teal/20 text-white relative overflow-hidden group cursor-pointer transform transition-all active:scale-[0.99] border border-white/5">
             <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 blur-[80px] rounded-full -mr-20 -mt-20 group-hover:scale-110 transition-transform duration-500" />
             <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-8">
               <div className="flex items-center space-x-6">
-                <div className="w-16 h-16 bg-white/20 backdrop-blur-md rounded-2xl flex items-center justify-center border border-white/20">
-                  <DollarSign className="w-8 h-8 text-white" />
+                <div className="w-16 h-16 bg-white/10 backdrop-blur-md rounded-2xl flex items-center justify-center border border-white/20 shadow-inner">
+                  <Wallet className="w-8 h-8 text-[#AEEF3C]" />
                 </div>
                 <div>
                   <h3 className="text-2xl font-black mb-1">Pending Deposit Due</h3>
-                  <p className="text-amber-50 font-medium">Summer Vacay Pool • Cycle 4 • 200 STX</p>
+                  <p className="text-white/60 font-medium">Summer Vacay Pool • Cycle 4 • 200 STX</p>
                 </div>
               </div>
               <button 
-                className="px-8 py-4 bg-white text-amber-600 rounded-2xl font-black hover:bg-amber-50 transition-all flex items-center justify-center space-x-3 group-hover:translate-x-2 transform duration-300"
+                className="px-8 py-4 bg-[#AEEF3C] text-[#0A1628] rounded-2xl font-black hover:scale-110 transition-all flex items-center justify-center space-x-3 group-hover:translate-x-2 transform duration-300 shadow-xl shadow-black/20 active:scale-95"
               >
                 <span>Deposit Now</span>
                 <ArrowRight className="w-5 h-5" />
@@ -123,11 +182,14 @@ export default function Dashboard() {
         </div>
 
         {/* Groups Section */}
-        <div className="bg-white rounded-[40px] shadow-sm border border-gray-100 p-10">
+        <div className="bg-bg-secondary rounded-[40px] shadow-lg p-10 backdrop-blur-sm transition-colors duration-300">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-8 mb-10">
-            <h2 className="text-2xl font-black text-gray-900 tracking-tight">My Groups</h2>
+            <h2 className="text-2xl font-black text-text-base tracking-tight flex items-center space-x-3">
+              <Briefcase className="w-6 h-6 text-[#AEEF3C]" />
+              <span>My Groups</span>
+            </h2>
             
-            <div className="flex items-center space-x-2 p-1.5 bg-gray-50 rounded-2xl">
+            <div className="flex items-center space-x-2 p-1.5 bg-bg-base rounded-[20px] shadow-inner">
               <TabButton label="Active" active={activeTab === 'active'} onClick={() => setActiveTab('active')} />
               <TabButton label="Pending" active={activeTab === 'pending'} onClick={() => setActiveTab('pending')} />
               <TabButton label="Completed" active={activeTab === 'completed'} onClick={() => setActiveTab('completed')} />
@@ -135,28 +197,49 @@ export default function Dashboard() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            {MY_GROUPS.map((group) => (
-              <GroupCard key={group.id} {...group} isMember={true} />
-            ))}
+            {isLoading ? (
+              <div className="md:col-span-2 text-center py-20 bg-bg-base/30 rounded-[32px]">
+                <Loader2 className="w-8 h-8 text-[#AEEF3C] animate-spin mx-auto mb-4" />
+                <p className="text-text-tertiary font-bold italic">Loading your groups...</p>
+              </div>
+            ) : filteredGroups.length > 0 ? (
+              filteredGroups.map((group) => (
+                <GroupCard key={group.id} {...group} isMember={true} />
+              ))
+            ) : (
+                <div className="md:col-span-2 text-center py-20 bg-bg-base/30 rounded-[32px]">
+                    <p className="text-text-tertiary font-bold italic">No {activeTab} groups found.</p>
+                </div>
+            )}
             
             {/* Join More Empty Card */}
             <div 
               onClick={() => navigate('/browse')}
-              className="border-2 border-dashed border-gray-200 rounded-3xl p-10 flex flex-col items-center justify-center text-center group cursor-pointer hover:border-primary-300 hover:bg-primary-50/30 transition-all"
+              className="bg-bg-base/50 rounded-[32px] p-10 flex flex-col items-center justify-center text-center group cursor-pointer hover:bg-[#AEEF3C]/5 transition-all transform active:scale-[0.98] shadow-sm"
             >
-              <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mb-6 group-hover:bg-primary-100 transition-colors">
-                <Search className="w-8 h-8 text-gray-400 group-hover:text-primary-600 transition-colors" />
+              <div className="w-16 h-16 bg-bg-base rounded-2xl flex items-center justify-center mb-6 group-hover:bg-[#AEEF3C] transition-all transition-colors duration-300">
+                <Search className="w-8 h-8 text-text-tertiary group-hover:text-[#0A1628] transition-colors transform group-hover:scale-110" />
               </div>
-              <h3 className="text-xl font-black text-gray-900 mb-2">Discover More</h3>
-              <p className="text-gray-400 font-medium mb-6">Find more groups to join and save with the community.</p>
-              <span className="text-primary-600 font-black text-sm uppercase tracking-widest flex items-center space-x-2">
+              <h3 className="text-xl font-black text-text-base mb-2">Discover More</h3>
+              <p className="text-text-secondary font-medium mb-6">Find more groups to join and save with the community.</p>
+              <span className="text-[#AEEF3C] font-black text-sm uppercase tracking-widest flex items-center space-x-2">
                 <span>Browse Groups</span>
-                <ArrowRight className="w-4 h-4" />
+                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
               </span>
             </div>
           </div>
         </div>
       </div>
+
+      <CreateGroupModal 
+        isOpen={isCreateModalOpen} 
+        onClose={() => setCreateModalOpen(false)}
+        onSuccess={() => {
+          setCreateModalOpen(false);
+          // Trigger a page refresh to fetch the newly created group
+          window.location.reload();
+        }}
+      />
     </div>
   );
 }
@@ -165,10 +248,10 @@ function TabButton({ label, active, onClick }: { label: string, active: boolean,
   return (
     <button
       onClick={onClick}
-      className={`px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${
+      className={`px-6 py-2.5 rounded-[14px] text-[10px] font-black uppercase tracking-widest transition-all transform active:scale-95 ${
         active 
-          ? 'bg-white shadow-md text-gray-900' 
-          : 'text-gray-400 hover:text-gray-600'
+          ? 'bg-bg-secondary shadow-lg text-text-base scale-[1.02]' 
+          : 'text-text-tertiary hover:text-text-base hover:bg-bg-secondary/30'
       }`}
     >
       {label}

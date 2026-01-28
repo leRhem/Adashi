@@ -2,7 +2,7 @@
 
 export type GroupMode = 1 | 2 | 3; // 1: ROSCA, 2: Collective, 3: Interest-Bearing
 
-export type GroupStatus = 'enrollment' | 'active' | 'completed' | 'paused';
+export type GroupStatus = 'enrollment' | 'active' | 'completed' | 'paused' | 'withdrawal_open';
 
 export interface Group {
   id: string;

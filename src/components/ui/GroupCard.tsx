@@ -1,6 +1,9 @@
-import { Coins, Users, Clock, Activity, Globe, AlertTriangle, UserPlus } from 'lucide-react';
+import { 
+  Coins, Users, Globe, 
+  UserPlus, Zap, Shield, TrendingUp 
+} from 'lucide-react';
 import type { Group } from '../../types';
-import { formatSTX, blocksToReadable } from '../../utils/format';
+import { formatSTX } from '../../utils/format';
 import { useNavigate } from 'react-router-dom';
 
 interface GroupCardProps extends Group {
@@ -18,9 +21,6 @@ export default function GroupCard(props: GroupCardProps) {
     depositAmount,
     currentMembers,
     maxMembers,
-    cycleDuration,
-    status,
-    currentCycle,
     isMember,
     canJoin
   } = props;
@@ -29,49 +29,67 @@ export default function GroupCard(props: GroupCardProps) {
 
   const handleJoin = (e: React.MouseEvent) => {
     e.stopPropagation();
-    // Join logic will be handled by parent or modal
     console.log('Join group', id);
   };
 
   const handleViewDetails = () => {
-    navigate(`/group/${id}`);
+    // Build a clean group object to pass via state
+    const groupData = {
+      id,
+      groupName,
+      description,
+      creator: props.creator,
+      depositAmount,
+      currentMembers,
+      maxMembers,
+      cycleDuration: props.cycleDuration,
+      status: props.status,
+      isPublic,
+      mode,
+      currentCycle: props.currentCycle,
+      enrollmentEndBlock: props.enrollmentEndBlock,
+      createdAt: props.createdAt,
+      poolBalance: props.poolBalance
+    };
+    console.log('Navigating to group details with state:', groupData);
+    navigate(`/group/${id}`, { state: { group: groupData } });
   };
 
   return (
     <div 
       onClick={handleViewDetails}
-      className="bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-300 overflow-hidden group cursor-pointer border border-gray-100 flex flex-col h-full"
+      className="bg-bg-secondary backdrop-blur-sm rounded-[32px] shadow-xl hover:shadow-[#AEEF3C]/10 transition-all duration-300 overflow-hidden group cursor-pointer flex flex-col h-full active:scale-[0.98]"
     >
       {/* Header with Mode Badge */}
-      <div className="relative h-32 bg-gradient-to-br from-primary-600 to-primary-800">
+      <div className="relative h-28 bg-gradient-to-br from-[#0A1628] to-[#0D7377]">
         {/* Mode Badge */}
         <div className="absolute top-4 right-4">
-          <span className={`
-            px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider shadow-sm
-            ${mode === 1 ? 'bg-blue-100 text-blue-700' : ''}
-            ${mode === 2 ? 'bg-purple-100 text-purple-700' : ''}
-            ${mode === 3 ? 'bg-emerald-100 text-emerald-700' : ''}
-          `}>
-            {mode === 1 && '⚡ ROSCA'}
-            {mode === 2 && '🔒 Collective'}
-            {mode === 3 && '📈 Interest'}
-          </span>
+          {(mode === 1 || mode === 2 || mode === 3) && (
+            <span className={`
+              px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider shadow-sm flex items-center space-x-1.5
+              ${mode === 1 ? 'bg-[#AEEF3C] text-navy' : 'bg-white/10 text-white'}
+            `}>
+              {mode === 1 && <><Zap className="w-3 h-3" /> <span>ROSCA</span></>}
+              {mode === 2 && <><Shield className="w-3 h-3" /> <span>Collective</span></>}
+              {mode === 3 && <><TrendingUp className="w-3 h-3" /> <span>Interest</span></>}
+            </span>
+          )}
         </div>
 
         {/* Group Type Badge */}
         {isPublic && (
           <div className="absolute top-4 left-4">
-            <span className="px-3 py-1 bg-amber-100 text-amber-700 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center space-x-1 shadow-sm">
+            <span className="px-3 py-1.5 bg-white/10 text-white rounded-full text-[10px] font-black uppercase tracking-wider flex items-center space-x-1.5 backdrop-blur-md border border-white/10">
               <Globe className="w-3 h-3" />
               <span>Public</span>
             </span>
           </div>
         )}
 
-        {/* Group Icon/Avatar */}
+        {/* Group Initial/Icon */}
         <div className="absolute bottom-0 left-6 transform translate-y-1/2">
-          <div className="w-16 h-16 bg-white rounded-2xl shadow-lg flex items-center justify-center border-4 border-white transition-transform group-hover:scale-110">
-            <Users className="w-8 h-8 text-primary-600" />
+          <div className="w-14 h-14 bg-bg-primary rounded-2xl shadow-xl flex items-center justify-center transition-transform group-hover:scale-110 group-hover:rotate-3">
+            <Users className="w-6 h-6 text-[#AEEF3C]" />
           </div>
         </div>
       </div>
@@ -79,96 +97,54 @@ export default function GroupCard(props: GroupCardProps) {
       {/* Content */}
       <div className="p-6 pt-10 flex-grow flex flex-col">
         {/* Group Name */}
-        <h3 className="text-xl font-bold text-gray-900 mb-2 group-hover:text-primary-600 transition-colors">
+        <h3 className="text-xl font-black text-text-base mb-2 group-hover:text-[#0D7377] transition-colors leading-tight">
           {groupName}
         </h3>
 
         {/* Description */}
         {description && (
-          <p className="text-sm text-gray-500 mb-6 line-clamp-2 h-10">
+          <p className="text-xs text-text-secondary mb-6 line-clamp-2 h-8 font-medium italic leading-relaxed">
             {description}
           </p>
         )}
 
         {/* Stats Grid */}
-        <div className="grid grid-cols-2 gap-4 mb-6">
+        <div className="grid grid-cols-2 gap-3 mb-6">
           <StatItem 
-            icon={<Coins className="w-4 h-4 text-primary-600" />} 
+            icon={<Coins className="w-3.5 h-3.5" />} 
             label="Deposit" 
             value={`${formatSTX(depositAmount)} STX`} 
-            bgColor="bg-primary-50" 
+            color="text-[#0D7377]"
           />
           <StatItem 
-            icon={<Users className="w-4 h-4 text-purple-600" />} 
+            icon={<Users className="w-3.5 h-3.5" />} 
             label="Members" 
-            value={`${currentMembers}/${maxMembers === 0 ? '100' : maxMembers}`} 
-            bgColor="bg-purple-50" 
-          />
-          <StatItem 
-            icon={<Clock className="w-4 h-4 text-blue-600" />} 
-            label="Cycle" 
-            value={blocksToReadable(cycleDuration)} 
-            bgColor="bg-blue-50" 
-          />
-          <StatItem 
-            icon={<Activity className={`w-4 h-4 ${status === 'active' ? 'text-success-600' : 'text-amber-600'}`} />} 
-            label="Status" 
-            value={status} 
-            bgColor={status === 'active' ? 'bg-success-50' : 'bg-amber-50'} 
-            capitalize 
+            value={`${currentMembers}/${maxMembers || 100}`} 
+            color="text-text-base"
           />
         </div>
 
-        {/* Progress Bar (if active) */}
-        {status === 'active' && (
-          <div className="mb-6">
-            <div className="flex justify-between text-xs text-gray-600 mb-2">
-              <span className="font-medium">Cycle {currentCycle} of {maxMembers}</span>
-              <span className="font-bold text-primary-600">{Math.round((currentCycle / (maxMembers || 1)) * 100)}%</span>
-            </div>
-            <div className="w-full bg-gray-100 rounded-full h-2">
-              <div
-                className="bg-gradient-to-r from-primary-500 to-primary-600 h-2 rounded-full transition-all duration-1000 ease-out"
-                style={{ width: `${(currentCycle / (maxMembers || 1)) * 100}%` }}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Risk Warning for Model 1 Public Groups */}
-        {isPublic && mode === 1 && (
-          <div className="mb-6 p-3 bg-error-50 border border-error-100 rounded-xl">
-            <div className="flex items-start space-x-2">
-              <AlertTriangle className="w-4 h-4 text-error-600 mt-0.5 flex-shrink-0" />
-              <p className="text-[10px] leading-tight text-error-700 font-medium">
-                <strong>High Risk:</strong> Public ROSCA groups allow untrusted members who may leave early.
-              </p>
-            </div>
-          </div>
-        )}
-
-        <div className="mt-auto flex space-x-3">
-          {canJoin && (
+        {/* Action Button */}
+        <div className="mt-auto pt-4">
+          {canJoin ? (
             <button
               onClick={handleJoin}
-              className="flex-1 px-4 py-2.5 bg-primary-600 text-white rounded-xl font-bold hover:bg-primary-700 transition flex items-center justify-center space-x-2 shadow-md hover:shadow-lg active:scale-95"
+              className="w-full px-4 py-3 bg-[#AEEF3C] text-[#0A1628] rounded-xl font-black text-xs uppercase tracking-widest hover:scale-[1.02] transition-all flex items-center justify-center space-x-2 shadow-lg shadow-[#AEEF3C]/10 active:scale-95"
             >
               <UserPlus className="w-4 h-4" />
               <span>Join Group</span>
             </button>
-          )}
-          
-          {isMember ? (
+          ) : isMember ? (
             <button
               onClick={handleViewDetails}
-              className="flex-1 px-4 py-2.5 bg-success-50 text-success-700 border border-success-200 rounded-xl font-bold hover:bg-success-100 transition shadow-sm active:scale-95"
+              className="w-full px-4 py-3 bg-bg-base text-text-base rounded-xl font-black text-xs uppercase tracking-widest hover:bg-bg-secondary transition-all active:scale-95 shadow-sm"
             >
-              View Dashboard
+              Dashboard
             </button>
-          ) : !canJoin && (
+          ) : (
             <button
               onClick={handleViewDetails}
-              className="flex-1 px-4 py-2.5 bg-gray-50 text-gray-700 border border-gray-200 rounded-xl font-bold hover:bg-gray-100 transition shadow-sm active:scale-95"
+              className="w-full px-4 py-3 bg-bg-base text-text-tertiary rounded-xl font-black text-xs uppercase tracking-widest hover:text-text-base transition-all active:scale-95 shadow-sm"
             >
               Learn More
             </button>
@@ -179,15 +155,15 @@ export default function GroupCard(props: GroupCardProps) {
   );
 }
 
-function StatItem({ icon, label, value, bgColor, capitalize = false }: { icon: React.ReactNode, label: string, value: string, bgColor: string, capitalize?: boolean }) {
+function StatItem({ icon, label, value, color }: { icon: React.ReactNode, label: string, value: string, color: string }) {
   return (
-    <div className="flex items-center space-x-3">
-      <div className={`p-2.5 ${bgColor} rounded-xl shadow-sm`}>
+    <div className="flex items-center space-x-3 bg-bg-base p-3 rounded-2xl shadow-sm">
+      <div className={`${color} opacity-60`}>
         {icon}
       </div>
-      <div className="min-w-0">
-        <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{label}</p>
-        <p className={`text-sm font-bold text-gray-900 truncate ${capitalize ? 'capitalize' : ''}`}>
+      <div className="min-w-0 text-left">
+        <p className="text-[8px] font-black text-text-tertiary uppercase tracking-widest mb-0.5">{label}</p>
+        <p className={`text-xs font-black text-text-base truncate`}>
           {value}
         </p>
       </div>

@@ -38,22 +38,25 @@ export default function Modal({ isOpen, onClose, title, children, maxWidth = 'md
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
               className={`
-                relative bg-white rounded-3xl shadow-2xl
+                relative bg-bg-secondary rounded-[40px] shadow-2xl
                 ${maxWidthClass} w-full
                 overflow-hidden
+                backdrop-blur-xl
+                transition-colors duration-300
               `}
               onClick={(e) => e.stopPropagation()}
             >
               {/* Header */}
-              <div className="flex items-center justify-between p-6 border-b border-gray-100">
-                <h2 className="text-2xl font-bold text-gray-900 tracking-tight">
+              <div className="flex items-center justify-between p-8">
+                <h2 className="text-2xl font-black text-text-base tracking-tight uppercase">
                   {title}
                 </h2>
                 <button
                   onClick={onClose}
-                  className="p-2 hover:bg-gray-100 rounded-xl transition-colors group"
+                  aria-label="Close modal"
+                  className="p-3 bg-bg-base hover:bg-bg-tertiary rounded-2xl transition-all group shadow-sm"
                 >
-                  <X className="w-5 h-5 text-gray-400 group-hover:text-gray-900" />
+                  <X className="w-5 h-5 text-text-tertiary group-hover:text-text-base group-hover:rotate-90 transition-all duration-300" />
                 </button>
               </div>
 

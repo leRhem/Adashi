@@ -1,58 +1,117 @@
-import React, { useState } from 'react';
-import { NavLink } from 'react-router-dom';
-import { Coins, Wallet, Menu, Copy, ExternalLink, LogOut, User } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { NavLink as RouterNavLink, useNavigate, useLocation } from 'react-router-dom';
+import { Wallet, Menu, Copy, ExternalLink, LogOut, User, ChevronDown } from 'lucide-react';
 import { useStacksConnect } from '../../hooks/useStacksConnect';
-import { formatAddress } from '../../utils/format';
+import ThemeToggle from '../ui/ThemeToggle';
+import { useTheme } from '../../context/ThemeContext';
+import logoGreen from '../../assets/Logo - green.png';
+import logoWhite from '../../assets/Logo - white.png';
+
+function NavLink({ to, label, active }: { to: string; label: string; active: boolean }) {
+  return (
+    <RouterNavLink
+      to={to}
+      className={`px-4 py-2 rounded-xl text-sm font-bold transition-all duration-200 ${
+        active 
+          ? 'bg-[#AEEF3C] text-[#0A1628] shadow-lg shadow-[#AEEF3C]/10' 
+          : 'text-text-base/70 hover:text-text-base hover:bg-white/5'
+      }`}
+    >
+      {label}
+    </RouterNavLink>
+  );
+}
 
 export default function Header() {
   const { isConnected, userAddress, connectWallet, disconnect } = useStacksConnect();
+  const { theme } = useTheme();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [scrollProgress, setScrollProgress] = useState(0);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    const handleScroll = () => {
+      const scrollY = window.scrollY;
+      
+      // Calculate progress for transitions (0 to 1 over 100px)
+      const progress = Math.min(scrollY / 100, 1);
+      setScrollProgress(progress);
+    };
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  const handleCopyAddress = () => {
+    navigator.clipboard.writeText(userAddress);
+  };
 
   return (
-    <header className="bg-white border-b border-gray-200 sticky top-0 z-50">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between items-center h-16">
-          {/* Logo */}
-          <NavLink to="/" className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-primary-600 to-primary-700 rounded-lg flex items-center justify-center shadow-lg">
-              <Coins className="w-6 h-6 text-white" />
+    <header 
+      className="fixed left-0 right-0 z-50 px-4 pointer-events-none transition-all duration-300"
+      style={{ 
+        top: `${24 - scrollProgress * 12}px`,
+        opacity: 0.8 + scrollProgress * 0.2
+      }}
+    >
+      <div className="max-w-5xl mx-auto pointer-events-auto">
+        <div 
+          className="flex justify-between items-center bg-bg-secondary/40 backdrop-blur-xl rounded-full border border-white/10 shadow-2xl transition-all duration-300"
+          style={{ 
+            height: `${64 - scrollProgress * 8}px`,
+            paddingLeft: `${32 - scrollProgress * 4}px`,
+            paddingRight: `${32 - scrollProgress * 4}px`,
+            backgroundColor: `rgba(var(--bg-secondary-rgb), ${0.4 + scrollProgress * 0.4})`,
+            scale: 1 - scrollProgress * 0.02
+          }}
+        >
+          {/* Logo & Brand */}
+          <div 
+            onClick={() => navigate('/')} 
+            className="flex items-center group cursor-pointer"
+          >
+            <div className="flex items-center justify-center transition-transform group-hover:scale-105">
+              <img 
+                src={theme === 'dark' ? logoWhite : logoGreen} 
+                alt="Adashi Logo" 
+                className="w-28 h-auto object-contain" 
+              />
             </div>
-            <span className="text-xl font-bold text-gray-900 tracking-tight">
-              CoopSave
-            </span>
-          </NavLink>
+          </div>
 
           {/* Desktop Navigation */}
-          <nav className="hidden md:flex space-x-1">
-            <NavOption to="/dashboard">Dashboard</NavOption>
-            <NavOption to="/browse">Browse Groups</NavOption>
-            <NavOption to="/create">Create Group</NavOption>
-          </nav>
-
-          {/* Wallet Connection */}
-          <div className="flex items-center space-x-4">
-            {isConnected ? (
-              <div className="flex items-center space-x-3">
-                {/* Wallet Address */}
-                <div className="hidden sm:flex items-center space-x-2 px-3 py-2 bg-gray-50 border border-gray-100 rounded-lg">
-                  <div className="w-2 h-2 bg-success-500 rounded-full animate-pulse" />
-                  <span className="text-sm font-medium text-gray-700 font-mono">
-                    {formatAddress(userAddress)}
-                  </span>
-                </div>
-                
-                {/* User Dropdown */}
-                <div className="relative group">
-                  <button className="p-2 hover:bg-gray-100 rounded-lg transition-colors border border-transparent hover:border-gray-200">
-                    <User className="w-5 h-5 text-gray-600" />
+          <nav className="hidden md:flex items-center space-x-1">
+            <NavLink to="/browse" label="Browse Groups" active={location.pathname === '/browse'} />
+            <NavLink to="/dashboard" label="Dashboard" active={location.pathname === '/dashboard'} />
+            
+            <div className="ml-4 pl-4 border-l border-white/10 flex items-center space-x-4">
+              <ThemeToggle />
+              
+              {isConnected ? (
+                <div className="relative">
+                  <button 
+                    onClick={() => setIsUserMenuOpen(!isUserMenuOpen)}
+                    className="flex items-center space-x-3 bg-white/5 hover:bg-white/10 p-1.5 pr-4 rounded-2xl transition-all"
+                  >
+                    <div className="w-8 h-8 bg-deep-teal rounded-xl flex items-center justify-center">
+                      <User className="w-4 h-4 text-white" />
+                    </div>
+                    <div className="flex flex-col items-start text-left">
+                      <span className="text-[10px] font-bold text-success-500 uppercase tracking-widest leading-none">Connected</span>
+                      <span className="text-xs font-mono text-text-base/60 leading-tight">{userAddress.slice(0, 6)}...{userAddress.slice(-4)}</span>
+                    </div>
+                    <ChevronDown className={`w-4 h-4 text-text-base/40 transition-transform ${isUserMenuOpen ? 'rotate-180' : ''}`} />
                   </button>
-                  
-                  <div className="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-xl border border-gray-100 py-2 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 transform origin-top-right group-hover:translate-y-0 translate-y-2">
-                     <button
+
+                  {isUserMenuOpen && (
+                    <div className="absolute right-0 mt-3 w-56 bg-bg-secondary rounded-[24px] shadow-2xl py-2 z-50 animate-slide-in">
+                      <button
                         onClick={() => {
-                          navigator.clipboard.writeText(userAddress);
+                          handleCopyAddress();
+                          setIsUserMenuOpen(false);
                         }}
-                        className="w-full flex items-center space-x-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                        className="w-full flex items-center space-x-3 px-4 py-3 text-sm text-text-base/70 hover:text-text-base hover:bg-white/5 transition-colors"
                       >
                         <Copy className="w-4 h-4" />
                         <span>Copy Address</span>
@@ -61,68 +120,67 @@ export default function Header() {
                         href={`https://explorer.stacks.co/address/${userAddress}?chain=testnet`}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="flex items-center space-x-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors"
+                        className="flex items-center space-x-3 px-4 py-3 text-sm text-text-base/70 hover:text-text-base hover:bg-white/5 transition-colors"
+                        onClick={() => setIsUserMenuOpen(false)}
                       >
                         <ExternalLink className="w-4 h-4" />
                         <span>View on Explorer</span>
                       </a>
-                      <div className="my-1 border-t border-gray-100" />
+                      <div className="my-2 h-px bg-white/5 mx-4" />
                       <button
-                        onClick={disconnect}
-                        className="w-full flex items-center space-x-2 px-4 py-2 text-sm text-error-600 hover:bg-error-50 transition-colors"
+                        onClick={() => {
+                          disconnect();
+                          setIsUserMenuOpen(false);
+                        }}
+                        className="w-full flex items-center space-x-3 px-4 py-3 text-sm text-rose-500 hover:bg-rose-500/10 transition-colors"
                       >
                         <LogOut className="w-4 h-4" />
                         <span>Disconnect</span>
                       </button>
-                  </div>
+                    </div>
+                  )}
                 </div>
-              </div>
-            ) : (
+              ) : (
+                <button
+                  onClick={connectWallet}
+                  className="px-6 py-2.5 bg-[#AEEF3C] text-[#0A1628] rounded-full font-bold hover:scale-105 active:scale-95 transition-all shadow-xl shadow-[#AEEF3C]/20 flex items-center space-x-2"
+                >
+                  <Wallet className="w-4 h-4" />
+                  <span>Connect</span>
+                </button>
+              )}
+            </div>
+          </nav>
+
+          {/* Mobile Menu Toggle */}
+          <button 
+            className="md:hidden p-2.5 bg-white/5 rounded-full"
+            onClick={() => setIsMenuOpen(!isMenuOpen)}
+          >
+            <Menu className="w-5 h-5 text-white" />
+          </button>
+        </div>
+
+        {/* Mobile Navigation */}
+        {isMenuOpen && (
+          <div className="mt-2 md:hidden bg-bg-secondary/90 backdrop-blur-xl p-4 space-y-2 animate-slide-in shadow-xl rounded-[32px] border border-white/10">
+            <RouterNavLink to="/browse" className="block px-6 py-4 rounded-2xl bg-white/5 text-white font-bold">Browse Groups</RouterNavLink>
+            <RouterNavLink to="/dashboard" className="block px-6 py-4 rounded-2xl bg-white/5 text-white font-bold">Dashboard</RouterNavLink>
+            {!isConnected && (
               <button
                 onClick={connectWallet}
-                className="px-4 py-2 bg-primary-600 text-white rounded-lg font-semibold hover:bg-primary-700 transition-all shadow-md hover:shadow-lg flex items-center space-x-2 transform active:scale-95"
+                className="w-full px-6 py-4 bg-[#AEEF3C] text-[#0A1628] rounded-2xl font-bold flex items-center justify-center space-x-2"
               >
-                <Wallet className="w-4 h-4" />
+                <Wallet className="w-5 h-5" />
                 <span>Connect Wallet</span>
               </button>
             )}
-
-            {/* Mobile Menu Toggle */}
-            <button 
-              className="md:hidden p-2 hover:bg-gray-100 rounded-lg"
-              onClick={() => setIsMenuOpen(!isMenuOpen)}
-            >
-              <Menu className="w-6 h-6 text-gray-600" />
-            </button>
+            <div className="pt-2 flex justify-center">
+              <ThemeToggle />
+            </div>
           </div>
-        </div>
+        )}
       </div>
-
-      {/* Mobile Navigation Menu */}
-      {isMenuOpen && (
-        <div className="md:hidden border-t border-gray-100 bg-white px-4 py-4 space-y-2">
-          <NavLink to="/dashboard" className="block px-4 py-3 rounded-lg hover:bg-gray-50 text-gray-700 font-medium">Dashboard</NavLink>
-          <NavLink to="/browse" className="block px-4 py-3 rounded-lg hover:bg-gray-50 text-gray-700 font-medium">Browse Groups</NavLink>
-          <NavLink to="/create" className="block px-4 py-3 rounded-lg hover:bg-gray-50 text-gray-700 font-medium">Create Group</NavLink>
-        </div>
-      )}
     </header>
-  );
-}
-
-function NavOption({ to, children }: { to: string; children: React.ReactNode }) {
-  return (
-    <NavLink
-      to={to}
-      className={({ isActive }) =>
-        `px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${
-          isActive
-            ? 'bg-primary-50 text-primary-700 scale-105 shadow-sm'
-            : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
-        }`
-      }
-    >
-      {children}
-    </NavLink>
   );
 }
