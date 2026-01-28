@@ -12,6 +12,7 @@ import AccessFundsModal, { type ClaimableItem } from '../components/modals/Acces
 import type { Group, GroupMode, GroupStatus, Member } from '../types';
 import { useStacksConnect } from '../hooks/useStacksConnect';
 import { useContract, STATUS_ENROLLMENT, STATUS_ACTIVE } from '../hooks/useContract';
+import { formatSTX } from '../utils/format';
 
 export default function Dashboard() {
   const { userData, userAddress } = useStacksConnect();
@@ -167,6 +168,12 @@ export default function Dashboard() {
   
   const claimableBalance = claimableItems.reduce((sum, item) => sum + item.amount, 0);
 
+  // Find the first active group that needs a deposit
+  const pendingDeposit = useMemo(() => {
+    const activeGroup = myGroups.find(g => g.status === 'active');
+    return activeGroup || null;
+  }, [myGroups]);
+
   const filteredGroups = useMemo(() => {
     return myGroups.filter(group => {
       if (activeTab === 'active') return group.status === 'active';
@@ -218,8 +225,12 @@ export default function Dashboard() {
           />
         </div>
 
-        {/* Pending Action Card */}
-        <div className="mb-12 bg-deep-teal p-8 rounded-[40px] shadow-2xl shadow-deep-teal/20 text-white relative overflow-hidden group cursor-pointer transform transition-all active:scale-[0.99] border border-white/5">
+        {/* Pending Action Card - Only show if there's an active group */}
+        {pendingDeposit && (
+        <div 
+          onClick={() => navigate(`/group/${pendingDeposit.id}`)}
+          className="mb-12 bg-deep-teal p-8 rounded-[40px] shadow-2xl shadow-deep-teal/20 text-white relative overflow-hidden group cursor-pointer transform transition-all active:scale-[0.99] border border-white/5 hover:shadow-deep-teal/40"
+        >
             <div className="absolute top-0 right-0 w-64 h-64 bg-white/10 blur-[80px] rounded-full -mr-20 -mt-20 group-hover:scale-110 transition-transform duration-500" />
             <div className="relative flex flex-col md:flex-row md:items-center justify-between gap-8">
               <div className="flex items-center space-x-6">
@@ -228,7 +239,9 @@ export default function Dashboard() {
                 </div>
                 <div>
                   <h3 className="text-2xl font-black mb-1">Pending Deposit Due</h3>
-                  <p className="text-white/60 font-medium">Summer Vacay Pool • Cycle 4 • 200 STX</p>
+                  <p className="text-white/60 font-medium">
+                    {pendingDeposit.groupName} • Cycle {pendingDeposit.currentCycle || 1} • {formatSTX(pendingDeposit.depositAmount)}
+                  </p>
                 </div>
               </div>
               <button 
@@ -239,6 +252,7 @@ export default function Dashboard() {
               </button>
             </div>
         </div>
+        )}
 
         {/* Groups Section */}
         <div className="bg-bg-secondary rounded-[40px] shadow-lg p-10 backdrop-blur-sm transition-colors duration-300">
@@ -290,12 +304,12 @@ export default function Dashboard() {
         </div>
       </div>
 
+
       <CreateGroupModal 
         isOpen={isCreateModalOpen} 
         onClose={() => setCreateModalOpen(false)}
         onSuccess={() => {
           setCreateModalOpen(false);
-          // Trigger a page refresh to fetch the newly created group
           window.location.reload();
         }}
       />

@@ -1,10 +1,11 @@
 import { 
   Coins, Users, Globe, 
-  UserPlus, Zap, Shield, TrendingUp 
+  UserPlus, Zap, Shield, TrendingUp, Clock 
 } from 'lucide-react';
 import type { Group } from '../../types';
-import { formatSTX } from '../../utils/format';
+import { formatSTX, formatCountdown, getCountdownUrgency } from '../../utils/format';
 import { useNavigate } from 'react-router-dom';
+import { useBlocksRemaining } from '../../hooks/useBlockHeight';
 
 interface GroupCardProps extends Group {
   isMember?: boolean;
@@ -22,10 +23,23 @@ export default function GroupCard(props: GroupCardProps) {
     currentMembers,
     maxMembers,
     isMember,
-    canJoin
+    canJoin,
+    status,
+    enrollmentEndBlock
   } = props;
 
   const navigate = useNavigate();
+  
+  // Get blocks remaining for enrollment countdown
+  const { blocksRemaining } = useBlocksRemaining(enrollmentEndBlock);
+  const urgency = blocksRemaining ? getCountdownUrgency(blocksRemaining) : 'normal';
+  
+  const urgencyColors = {
+    normal: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
+    warning: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+    critical: 'bg-rose-500/20 text-rose-300 border-rose-500/30 animate-pulse',
+    expired: 'bg-gray-500/20 text-gray-400 border-gray-500/30'
+  };
 
   /* Shared group data construction */
   const getGroupData = () => ({
@@ -91,6 +105,16 @@ export default function GroupCard(props: GroupCardProps) {
             <span className="px-3 py-1.5 bg-white/10 text-white rounded-full text-[10px] font-black uppercase tracking-wider flex items-center space-x-1.5 backdrop-blur-md border border-white/10">
               <Globe className="w-3 h-3" />
               <span>Public</span>
+            </span>
+          </div>
+        )}
+
+        {/* Enrollment Countdown Badge - Only show for enrollment status */}
+        {status === 'enrollment' && blocksRemaining !== null && (
+          <div className="absolute bottom-4 right-4">
+            <span className={`px-2.5 py-1 rounded-full text-[9px] font-bold flex items-center space-x-1 border ${urgencyColors[urgency]}`}>
+              <Clock className="w-3 h-3" />
+              <span>{formatCountdown(blocksRemaining)}</span>
             </span>
           </div>
         )}

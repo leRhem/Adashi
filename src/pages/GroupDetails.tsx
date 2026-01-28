@@ -60,15 +60,15 @@ export default function GroupDetails() {
   const lastFetchParamsRef = useRef<string>('');
 
   // Get group data from router state (passed from GroupCard)
-  // Get group data
-  const refetchGroupData = useCallback(async (force: boolean = false) => {
+  // Get group data - returns true if fetch was performed, false if skipped
+  const refetchGroupData = useCallback(async (force: boolean = false): Promise<boolean> => {
       // Prevent concurrent fetches
       const fetchParams = `${groupId}-${userAddress}`;
       if (isFetchingRef.current) {
-        return; // Already fetching, skip
+        return false; // Already fetching, skip
       }
       if (!force && lastFetchParamsRef.current === fetchParams) {
-        return; // Params unchanged and not forced, skip
+        return false; // Params unchanged and not forced, skip
       }
       
       isFetchingRef.current = true;
@@ -167,9 +167,11 @@ export default function GroupDetails() {
             membersList.sort((a, b) => a.position - b.position);
             setKnownMembers(membersList);
         }
+        return true; // Fetch completed
       } catch (err) {
         console.error('Error fetching group:', err);
         setError('Failed to load group data');
+        return true; // Fetch attempted (even if failed)
       } finally {
         isFetchingRef.current = false;
       }
@@ -178,9 +180,21 @@ export default function GroupDetails() {
 
   useEffect(() => {
     if (!groupId) return;
+    
+    // Use group from location.state immediately while fetching fresh data
+    const stateGroup = location.state?.group as Group | undefined;
+    if (stateGroup) {
+      setGroup(stateGroup);
+    }
+    
     setIsLoading(true);
-    refetchGroupData().finally(() => setIsLoading(false));
-  }, [refetchGroupData, groupId]);
+    refetchGroupData().then((didFetch) => {
+      // Only set loading false if a fetch was actually performed
+      if (didFetch) {
+        setIsLoading(false);
+      }
+    });
+  }, [refetchGroupData, groupId, location.state]);
 
 
 
@@ -406,8 +420,8 @@ export default function GroupDetails() {
     );
   }
 
-  // Error state
-  if (error || !group) {
+  // Error state - only show after loading is complete
+  if (!isLoading && (error || !group)) {
     return (
       <div className="min-h-screen bg-bg-base py-32 px-4 sm:px-6 lg:px-8 flex items-center justify-center">
         <div className="text-center">
@@ -418,7 +432,7 @@ export default function GroupDetails() {
           <p className="text-text-secondary font-medium mb-6">{error || 'Group not found'}</p>
           <button
             onClick={() => navigate('/browse')}
-            className="px-6 py-3 bg-[#AEEF3C] text-navy rounded-xl font-bold"
+            className="px-6 py-3 bg-[#AEEF3C] text-navy rounded-xl font-bold hover:bg-[#9FE035] transition-colors"
           >
             Back to Browse
           </button>
@@ -427,6 +441,8 @@ export default function GroupDetails() {
     );
   }
 
+  // At this point, we know group is not null (TypeScript guard)
+  if (!group) return null;
 
   return (
     <div className="min-h-screen bg-bg-base py-32 px-4 sm:px-6 lg:px-8 transition-colors duration-300">
