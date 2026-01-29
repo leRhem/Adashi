@@ -4,7 +4,7 @@ import {
   ArrowLeft, Share2, UserPlus, DollarSign, 
   Calendar, User, Coins, Users, BarChart, 
   Activity, Shield, Info, Globe, Zap, Loader2,
-  PlayCircle, LogOut, Clock, History
+  PlayCircle, LogOut, Clock, History, Check, Vote, Gavel
 } from 'lucide-react';
 import type { Group, Member } from '../types';
 import type { GroupStatus, GroupMode } from '../types';
@@ -27,7 +27,13 @@ export default function GroupDetails() {
   const navigate = useNavigate();
   const location = useLocation();
   const { userAddress } = useStacksConnect();
-  const { getGroup, getGroupMember, joinPublicGroup, deposit, claimPayout, withdrawSavings, closeEnrollmentAndStart, openEnrollmentPeriod } = useContract();
+  const { 
+    getGroup, getGroupMember, joinPublicGroup, deposit, claimPayout, 
+    withdrawSavings, closeEnrollmentAndStart, openEnrollmentPeriod,
+    creatorAdvanceCycle, openWithdrawalWindow,
+    getModeChangeStatus, getMemberVoteStatus, proposeModeChange, voteOnModeChange, cancelModeChange,
+    addMember, startFirstCycle, creatorMarkPaid, creatorSetStatus
+  } = useContract();
   
   // Helper to convert blocks to days (1 block ≈ 10 minutes on Stacks)
   const formatCycleDuration = (blocks: number): string => {
@@ -49,9 +55,37 @@ export default function GroupDetails() {
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
   const { getContribution } = useContract();
   
+  
+
+
+
+
+  // Governance State
+  const [governanceStatus, setGovernanceStatus] = useState<{
+    pendingMode: number | null;
+    votesFor: number;
+    votesAgainst: number;
+    totalMembers: number;
+    allVoted: boolean;
+    approved: boolean;
+  } | null>(null);
+  
+  const [memberVoteStatus, setMemberVoteStatus] = useState<{
+    hasVoted: boolean;
+    vote: boolean;
+  } | null>(null);
+
+  // Private Group & Admin State
+  const [showAddMemberModal, setShowAddMemberModal] = useState(false);
+  const [newMemberAddress, setNewMemberAddress] = useState('');
+  const [newMemberName, setNewMemberName] = useState('');
+  const [newMemberPosition, setNewMemberPosition] = useState(1);
+
+
   const [activeTab, setActiveTab] = useState('Overview');
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+  const [showCopiedFeedback, setShowCopiedFeedback] = useState(false);
   const [memberName, setMemberName] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   
@@ -177,6 +211,53 @@ export default function GroupDetails() {
       }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groupId, userAddress]);
+
+  // Fetch Governance Data
+  const fetchGovernanceData = useCallback(async () => {
+    if (!groupId) return;
+    const govStatus = await getModeChangeStatus(groupId);
+    setGovernanceStatus(govStatus);
+    
+    if (userAddress) {
+      const voteStatus = await getMemberVoteStatus(groupId, userAddress);
+      setMemberVoteStatus(voteStatus);
+    }
+  }, [groupId, userAddress, getModeChangeStatus, getMemberVoteStatus]);
+
+  useEffect(() => {
+    if (activeTab === 'Governance' && groupId) {
+        fetchGovernanceData();
+    }
+  }, [activeTab, groupId, fetchGovernanceData]);
+
+  // Governance Actions
+  const handleProposeMode = async (newMode: number) => {
+    if (!groupId || !isCreator) return;
+    await executeAction('proposeMode', () => 
+      proposeModeChange(groupId, newMode, async () => {
+        await fetchGovernanceData();
+        await refetchGroupData(true);
+      }, () => {})
+    );
+  };
+
+  const handleVote = async (voteFor: boolean) => {
+    if (!groupId) return;
+    await executeAction('vote', () => 
+       voteOnModeChange(groupId, voteFor, async () => {
+         await fetchGovernanceData();
+       }, () => {})
+    );
+  };
+
+  const handleCancelModeChange = async () => {
+    if (!groupId || !isCreator) return;
+    await executeAction('cancelModeChange', () => 
+       cancelModeChange(groupId, async () => {
+         await fetchGovernanceData();
+       }, () => {})
+    );
+  };
 
   useEffect(() => {
     if (!groupId) return;
@@ -377,19 +458,73 @@ export default function GroupDetails() {
     );
   };
 
-  // Handle start group (Creator only - close enrollment and start)
+  // Handle start group (Creator only)
   const handleStartGroup = async () => {
-    if (!groupId || !isCreator) return;
+    if (!groupId || !isCreator || !group) return;
     
-    await executeAction('startGroup', () =>
-      closeEnrollmentAndStart(
+    await executeAction('startGroup', () => {
+      if (group.isPublic) {
+         return closeEnrollmentAndStart(
+          groupId,
+          async () => { await refetchGroupData(true); },
+          () => {}
+        );
+      } else {
+         return startFirstCycle(
+          groupId,
+          async () => { await refetchGroupData(true); },
+          () => {}
+        );
+      }
+    });
+  };
+
+  // Add Member (Private Group)
+  const handleAddMember = async () => {
+    if (!groupId || !isCreator) return;
+    if (!newMemberAddress || !newMemberName || newMemberPosition < 1) return;
+
+    await executeAction('addMember', () =>
+      addMember(
         groupId,
+        newMemberAddress,
+        newMemberName,
+        newMemberPosition,
         async () => {
+          setShowAddMemberModal(false);
+          setNewMemberAddress('');
+          setNewMemberName('');
+          setNewMemberPosition(prevState => prevState + 1);
           await refetchGroupData(true);
         },
         () => {}
       )
     );
+  };
+
+  // Pause/Unpause Group
+  const handleTogglePause = async () => {
+     if (!groupId || !isCreator || !group) return;
+     // status 3 = paused, 1 = active
+     const targetStatus = group.status === 'paused' ? 1 : 3; 
+
+     await executeAction('setStatus', () => 
+        creatorSetStatus(groupId, targetStatus, async () => {
+             await refetchGroupData(true);
+        })
+     );
+  };
+
+  // Mark Paid (Creator override)
+  const handleMarkPaid = async (memberAddress: string) => {
+      if (!groupId || !isCreator || !group) return;
+      if (!confirm(`Mark current cycle (${group.currentCycle}) as PAID for this member?`)) return;
+
+      await executeAction('markPaid', () => 
+          creatorMarkPaid(groupId, memberAddress, group.currentCycle, async () => {
+              await refetchGroupData(true);
+          })
+      );
   };
 
   // Handle open enrollment (Creator only - between cycles)
@@ -406,6 +541,69 @@ export default function GroupDetails() {
         () => {}
       )
     );
+  };
+
+  // Handle advance cycle (Creator only)
+  const handleAdvanceCycle = async () => {
+    if (!groupId || !isCreator) return;
+    
+    await executeAction('advanceCycle', () =>
+      creatorAdvanceCycle(
+        groupId,
+        async () => {
+          await refetchGroupData(true);
+        },
+        () => {}
+      )
+    );
+  };
+
+  // Handle open withdrawal window (Creator only - Collective mode)
+  const handleOpenWithdrawal = async () => {
+    if (!groupId || !isCreator) return;
+    
+    await executeAction('openWithdrawal', () =>
+      openWithdrawalWindow(
+        groupId,
+        async () => {
+          await refetchGroupData(true);
+        },
+        () => {}
+      )
+    );
+  };
+
+  // Handle share group
+  const handleShare = async () => {
+    const shareUrl = window.location.href;
+    const shareData = {
+      title: group?.groupName || 'Savings Group',
+      text: `Join "${group?.groupName}" on Adashi - a decentralized savings group on Stacks!`,
+      url: shareUrl
+    };
+
+    try {
+      // Use Web Share API if available (mostly mobile)
+      if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+        await navigator.share(shareData);
+      } else {
+        // Fallback: copy to clipboard
+        await navigator.clipboard.writeText(shareUrl);
+        setShowCopiedFeedback(true);
+        setTimeout(() => setShowCopiedFeedback(false), 2000);
+      }
+    } catch (err) {
+      // If share was cancelled or failed, try clipboard
+      if ((err as Error).name !== 'AbortError') {
+        try {
+          await navigator.clipboard.writeText(shareUrl);
+          setShowCopiedFeedback(true);
+          setTimeout(() => setShowCopiedFeedback(false), 2000);
+        } catch {
+          console.error('Failed to copy to clipboard:', err);
+        }
+      }
+    }
   };
 
   // Loading state
@@ -589,8 +787,25 @@ export default function GroupDetails() {
                     </button>
                 )}
 
-                <button className="p-5 bg-bg-base text-text-tertiary rounded-2xl hover:text-deep-teal transition-all group active:scale-95 shadow-sm">
-                  <Share2 className="w-6 h-6 group-hover:scale-110 transition-transform" />
+                <button 
+                  onClick={handleShare}
+                  className={`p-5 rounded-2xl transition-all group active:scale-95 shadow-sm relative ${
+                    showCopiedFeedback 
+                      ? 'bg-emerald-500 text-white' 
+                      : 'bg-bg-base text-text-tertiary hover:text-deep-teal'
+                  }`}
+                  title="Share group"
+                >
+                  {showCopiedFeedback ? (
+                    <Check className="w-6 h-6" />
+                  ) : (
+                    <Share2 className="w-6 h-6 group-hover:scale-110 transition-transform" />
+                  )}
+                  {showCopiedFeedback && (
+                    <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[10px] font-bold text-emerald-500 whitespace-nowrap">
+                      Link Copied!
+                    </span>
+                  )}
                 </button>
               </div>
             </div>
@@ -631,6 +846,53 @@ export default function GroupDetails() {
                       <p className="text-[10px] text-text-tertiary mt-2 italic">Allows new members to join for the next cycle.</p>
                    </div>
                 )}
+
+                {/* Advance Cycle Button - emergency override */}
+                {group.status === 'active' && (
+                   <div className="mt-4 border-t border-amber-500/10 pt-4">
+                      <button
+                        onClick={handleAdvanceCycle}
+                        disabled={isSubmitting}
+                        className="px-4 py-2 bg-amber-500/20 text-amber-500 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-amber-500/30 transition-colors flex items-center space-x-2"
+                      >
+                         <Clock className="w-3 h-3" />
+                         <span>Advance Cycle</span>
+                      </button>
+                      <p className="text-[10px] text-text-tertiary mt-2 italic">Manually move to the next cycle (emergency only).</p>
+                   </div>
+                )}
+                
+                {/* Enable Withdrawals - Collective Mode Term End */}
+                {group.mode === 2 && group.status === 'active' && group.currentCycle >= (group.maxMembers || 0) && (
+                   <div className="mt-4 border-t border-amber-500/10 pt-4">
+                      <button
+                        onClick={handleOpenWithdrawal}
+                        disabled={isSubmitting}
+                        className="px-4 py-2 bg-emerald-500/20 text-emerald-500 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-emerald-500/30 transition-colors flex items-center space-x-2"
+                      >
+                         <LogOut className="w-3 h-3" />
+                         <span>Enable Withdrawals</span>
+                      </button>
+                      <p className="text-[10px] text-text-tertiary mt-2 italic">Allow members to withdraw their savings.</p>
+                   </div>
+                )}
+                
+                {/* Pause/Unpause Logic */}
+                {group.status !== 'completed' && group.status !== 'withdrawal_open' && (
+                   <div className="mt-4 border-t border-amber-500/10 pt-4">
+                      <button
+                        onClick={handleTogglePause}
+                        disabled={isSubmitting}
+                        className="px-4 py-2 bg-amber-500/20 text-amber-500 rounded-xl text-xs font-black uppercase tracking-widest hover:bg-amber-500/30 transition-colors flex items-center space-x-2"
+                      >
+                         <PlayCircle className="w-3 h-3" />
+                         <span>{group.status === 'paused' ? 'Unpause Group' : 'Pause Group'}</span>
+                      </button>
+                      <p className="text-[10px] text-text-tertiary mt-2 italic">
+                        {group.status === 'paused' ? 'Resume group activities.' : 'Temporarily halt deposits and payouts.'}
+                      </p>
+                   </div>
+                )}
               </div>
             )}
           </div>
@@ -640,7 +902,7 @@ export default function GroupDetails() {
         <div className="bg-bg-secondary rounded-[48px] shadow-sm overflow-hidden min-h-[500px] transition-colors duration-300">
           <div className="px-10">
             <nav className="flex space-x-12">
-              {['Overview', 'Members', 'History'].map((tab) => (
+              {['Overview', 'Members', 'History', 'Governance'].map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -715,7 +977,18 @@ export default function GroupDetails() {
                 <div className="space-y-8">
                     <div className="flex items-center justify-between">
                         <h3 className="text-2xl font-black text-text-base tracking-tight uppercase">Participant List</h3>
-                        <span className="text-[10px] font-black text-text-tertiary uppercase tracking-widest">{group.currentMembers} Active Members</span>
+                        <div className="flex items-center gap-4">
+                            {isCreator && !group.isPublic && group.status !== 'completed' && (
+                                <button 
+                                   onClick={() => setShowAddMemberModal(true)}
+                                   className="px-4 py-2 bg-indigo-500 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-600 transition-colors flex items-center gap-2"
+                                >
+                                   <UserPlus className="w-3 h-3" />
+                                   Add Member
+                                </button>
+                            )}
+                            <span className="text-[10px] font-black text-text-tertiary uppercase tracking-widest">{group.currentMembers} Active Members</span>
+                        </div>
                     </div>
 
                     {knownMembers.length > 0 ? (
@@ -739,8 +1012,19 @@ export default function GroupDetails() {
                                             <p className="text-xs text-text-tertiary font-mono">{formatAddress(mem.address)}</p>
                                         </div>
                                     </div>
-                                    <div className="text-right">
+                                    <div className="text-right flex flex-col items-end gap-1">
                                         <p className="text-xs text-emerald-500 font-bold uppercase tracking-wider">Verified Member</p>
+                                        {isCreator && (
+                                            <button 
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleMarkPaid(mem.address);
+                                                }}
+                                                className="text-[10px] text-amber-500 font-bold hover:underline opacity-80 hover:opacity-100"
+                                            >
+                                                Mark Paid (Cycle {group.currentCycle})
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
                             ))}
@@ -816,6 +1100,128 @@ export default function GroupDetails() {
                         )}
                     </div>
                 </div>
+            )}
+
+            {/* Governance Tab */}
+            {activeTab === 'Governance' && (
+               <div className="space-y-8">
+                  <div className="flex items-center justify-between">
+                     <h3 className="text-2xl font-black text-text-base tracking-tight uppercase">Group Governance</h3>
+                  </div>
+                  
+                  {/* Current Mode Info */}
+                  <div className="p-6 bg-bg-base rounded-3xl border border-bg-tertiary">
+                     <div className="flex items-center space-x-4 mb-4">
+                         <Gavel className="w-6 h-6 text-indigo-500" />
+                         <h4 className="font-black text-text-base uppercase">Current Operational Mode</h4>
+                     </div>
+                     <p className="text-2xl font-black text-indigo-500 mb-2">{getModeLabel(group.mode)}</p>
+                     <p className="text-text-secondary text-sm">
+                        {group.mode === 1 ? 'Traditional ROSCA: Members take turns receiving the full pot.' :
+                         group.mode === 2 ? 'Collective Savings: Pool grows until end of term, then distributed.' :
+                         'Interest Bearing: Funds accrued yield in DeFi protocols (Future feature).'}
+                     </p>
+                  </div>
+
+                  {/* Pending Proposal */}
+                  {governanceStatus?.pendingMode ? (
+                      <div className="p-6 bg-amber-500/10 border border-amber-500/20 rounded-3xl animate-pulse-slow">
+                          <div className="flex items-center justify-between mb-6">
+                              <h4 className="font-black text-amber-500 uppercase flex items-center gap-2">
+                                  <Vote className="w-5 h-5" />
+                                  <span>Voting in Progress</span>
+                              </h4>
+                              {isCreator && (
+                                  <button onClick={handleCancelModeChange} disabled={isSubmitting} className="text-xs text-red-500 font-bold hover:underline">
+                                      Cancel Proposal
+                                  </button>
+                              )}
+                          </div>
+                          
+                          <p className="text-text-base font-bold mb-4">
+                              Proposal to switch to: <span className="text-amber-500">{getModeLabel(governanceStatus.pendingMode as GroupMode)}</span>
+                          </p>
+
+                          {/* Progress Bar */}
+                          <div className="mb-6">
+                              <div className="flex justify-between text-xs font-black uppercase mb-2">
+                                  <span className="text-emerald-500">For: {governanceStatus.votesFor}</span>
+                                  <span className="text-red-500">Against: {governanceStatus.votesAgainst}</span>
+                              </div>
+                              <div className="h-4 bg-bg-base rounded-full overflow-hidden flex">
+                                  <div className="bg-emerald-500 h-full transition-all duration-500" style={{ width: `${(governanceStatus.votesFor / (governanceStatus.totalMembers || 1)) * 100}%` }} />
+                                  <div className="bg-red-500 h-full transition-all duration-500" style={{ width: `${(governanceStatus.votesAgainst / (governanceStatus.totalMembers || 1)) * 100}%` }} />
+                              </div>
+                              <p className="text-center text-[10px] text-text-tertiary mt-2 uppercase tracking-widest">
+                                  {governanceStatus.totalMembers - (governanceStatus.votesFor + governanceStatus.votesAgainst)} votes remaining
+                              </p>
+                          </div>
+
+                          {/* Voting Actions */}
+                          {memberVoteStatus && !memberVoteStatus.hasVoted && (
+                              <div className="flex gap-4">
+                                  <button
+                                      onClick={() => handleVote(true)}
+                                      disabled={isSubmitting}
+                                      className="flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl font-black uppercase text-xs tracking-widest transition-colors"
+                                  >
+                                      Vote Yes
+                                  </button>
+                                  <button
+                                      onClick={() => handleVote(false)}
+                                      disabled={isSubmitting}
+                                      className="flex-1 py-3 bg-red-500 hover:bg-red-600 text-white rounded-xl font-black uppercase text-xs tracking-widest transition-colors"
+                                  >
+                                      Vote No
+                                  </button>
+                              </div>
+                          )}
+                          {memberVoteStatus?.hasVoted && (
+                              <div className="text-center p-3 bg-bg-base rounded-xl">
+                                  <p className="text-sm font-bold text-text-secondary">
+                                      You voted: <span className={memberVoteStatus.vote ? "text-emerald-500" : "text-red-500"}>
+                                          {memberVoteStatus.vote ? "YES" : "NO"}
+                                      </span>
+                                  </p>
+                              </div>
+                          )}
+                      </div>
+                  ) : (
+                      /* Propose New Mode (Creator Only) */
+                      isCreator && group.status === 'active' && !governanceStatus?.pendingMode && (
+                          <div className="p-6 bg-bg-base rounded-3xl border border-bg-tertiary">
+                              <h4 className="font-black text-text-base uppercase mb-4">Propose Mode Change</h4>
+                              <p className="text-sm text-text-secondary mb-6">
+                                  As the creator, you can propose switching to a different operational model. 
+                                  Requires unanimous member approval.
+                              </p>
+                              
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                  {group.mode !== 1 && (
+                                      <button 
+                                          onClick={() => handleProposeMode(1)} 
+                                          disabled={isSubmitting}
+                                          className="p-4 border border-bg-tertiary rounded-xl hover:border-deep-teal transition-colors text-left"
+                                      >
+                                          <span className="block font-bold text-text-base mb-1">Traditional ROSCA</span>
+                                          <span className="text-xs text-text-tertiary">Standard rotational savings</span>
+                                      </button>
+                                  )}
+                                  {group.mode !== 2 && (
+                                      <button 
+                                          onClick={() => handleProposeMode(2)}
+                                          disabled={isSubmitting}
+                                          className="p-4 border border-bg-tertiary rounded-xl hover:border-deep-teal transition-colors text-left"
+                                      >
+                                          <span className="block font-bold text-text-base mb-1">Collective Savings</span>
+                                          <span className="text-xs text-text-tertiary">Pool funds until target date</span>
+                                      </button>
+                                  )}
+                              </div>
+                          </div>
+                      )
+                  )}
+               </div>
             )}
           </div>
         </div>
@@ -922,6 +1328,66 @@ export default function GroupDetails() {
                 </button>
             </div>
          </div>
+      </Modal>
+
+      <Modal
+          isOpen={showAddMemberModal}
+          onClose={() => setShowAddMemberModal(false)}
+          title="Add New Member"
+          maxWidth="md"
+      >
+          <div className="space-y-6">
+              <div className="p-4 bg-indigo-500/10 rounded-2xl flex items-start space-x-3">
+                  <UserPlus className="w-5 h-5 text-indigo-500 mt-0.5 flex-shrink-0" />
+                  <p className="text-xs font-bold text-text-base leading-relaxed">
+                      Manually add a member to this private group. They will be assigned a payout position automatically unless specified.
+                  </p>
+              </div>
+
+              <div className="space-y-4">
+                  <div className="space-y-2">
+                      <label className="block text-xs font-black text-text-tertiary uppercase tracking-widest ml-1">Member Address (Stacks)</label>
+                      <input 
+                          type="text" 
+                          placeholder="SP..." 
+                          className="w-full px-5 py-3 bg-bg-base rounded-xl font-mono text-sm border border-transparent focus:border-indigo-500 focus:outline-none transition-all"
+                          value={newMemberAddress}
+                          onChange={(e) => setNewMemberAddress(e.target.value)}
+                      />
+                  </div>
+                  <div className="space-y-2">
+                      <label className="block text-xs font-black text-text-tertiary uppercase tracking-widest ml-1">Member Name / Alias</label>
+                      <input 
+                          type="text" 
+                          placeholder="e.g. Alice" 
+                          className="w-full px-5 py-3 bg-bg-base rounded-xl text-sm border border-transparent focus:border-indigo-500 focus:outline-none transition-all"
+                          value={newMemberName}
+                          onChange={(e) => setNewMemberName(e.target.value)}
+                      />
+                  </div>
+                  <div className="space-y-2">
+                      <label className="block text-xs font-black text-text-tertiary uppercase tracking-widest ml-1">Payout Position</label>
+                      <input 
+                          type="number" 
+                          min="1"
+                          className="w-full px-5 py-3 bg-bg-base rounded-xl text-sm border border-transparent focus:border-indigo-500 focus:outline-none transition-all"
+                          value={newMemberPosition}
+                          onChange={(e) => setNewMemberPosition(parseInt(e.target.value))}
+                      />
+                  </div>
+              </div>
+
+              <div className="pt-4">
+                  <button
+                      onClick={handleAddMember}
+                      disabled={isSubmitting || !newMemberAddress || !newMemberName}
+                      className="w-full py-4 bg-indigo-500 text-white rounded-xl font-bold hover:bg-indigo-600 transition-colors shadow-lg shadow-indigo-500/20 flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                       {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : <UserPlus className="w-5 h-5" />}
+                       <span>{isSubmitting ? 'Adding...' : 'Add Member'}</span>
+                  </button>
+              </div>
+          </div>
       </Modal>
     </div>
   );

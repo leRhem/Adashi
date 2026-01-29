@@ -424,6 +424,37 @@ export function useContract() {
     };
   };
 
+  /**
+   * Get mode change status (Governance)
+   */
+  const getModeChangeStatus = async (groupId: string) => {
+    const result = await callReadOnly('get-mode-change-status', [Cl.stringUtf8(groupId)]);
+    if (!result) return null;
+    return {
+      pendingMode: result['pending-mode'] ?? result.pending_mode ?? (result.pendingMode ? result.pendingMode.value : null),
+      votesFor: Number(result['votes-for'] ?? result.votes_for ?? result.votesFor ?? 0),
+      votesAgainst: Number(result['votes-against'] ?? result.votes_against ?? result.votesAgainst ?? 0),
+      totalMembers: Number(result['total-members'] ?? result.total_members ?? result.totalMembers ?? 0),
+      allVoted: Boolean(result['all-voted'] ?? result.all_voted ?? result.allVoted ?? false),
+      approved: Boolean(result.approved ?? false)
+    };
+  };
+
+  /**
+   * Get member vote status
+   */
+  const getMemberVoteStatus = async (groupId: string, memberAddress: string) => {
+    const result = await callReadOnly('get-member-vote-status', [
+      Cl.stringUtf8(groupId), 
+      Cl.principal(memberAddress)
+    ]);
+    if (!result) return null;
+    return {
+      hasVoted: Boolean(result['has-voted'] ?? result.has_voted ?? result.hasVoted ?? false),
+      vote: Boolean(result.vote ?? false)
+    };
+  };
+
   // ===========================================================================
   // WRITE FUNCTIONS
   // ===========================================================================
@@ -799,6 +830,8 @@ export function useContract() {
     getGroup, 
     getGroupMember,
     getContribution,
+    getModeChangeStatus,
+    getMemberVoteStatus,
     // Write functions
     createPublicGroup,
     createPrivateGroup,
@@ -806,9 +839,41 @@ export function useContract() {
     deposit, 
     claimPayout,
     withdrawSavings,
+    openWithdrawalWindow: async (groupId: string, onFinish: (data: any) => void, onCancel?: () => void) => {
+        await callContract('open-withdrawal-window', [Cl.stringUtf8(groupId)], onFinish, onCancel);
+    },
     openEnrollmentPeriod,
     closeEnrollmentAndStart,
     addMember,
+    startFirstCycle: async (groupId: string, onFinish: (data: any) => void, onCancel?: () => void) => {
+        await callContract('start-first-cycle', [Cl.stringUtf8(groupId)], onFinish, onCancel);
+    },
+    
+    // Admin Tools
+    creatorMarkPaid: async (groupId: string, memberAddress: string, cycle: number, onFinish: (data: any) => void, onCancel?: () => void) => {
+      await callContract('creator-mark-paid', [
+        Cl.stringUtf8(groupId),
+        Cl.principal(memberAddress),
+        Cl.uint(cycle)
+      ], onFinish, onCancel);
+    },
+    creatorSetStatus: async (groupId: string, newStatus: number, onFinish: (data: any) => void, onCancel?: () => void) => {
+      await callContract('creator-set-status', [Cl.stringUtf8(groupId), Cl.uint(newStatus)], onFinish, onCancel);
+    },
+    creatorAdvanceCycle: async (groupId: string, onFinish: (data: any) => void, onCancel?: () => void) => {
+      await callContract('creator-advance-cycle', [Cl.stringUtf8(groupId)], onFinish, onCancel);
+    },
+
+    // Mode Voting
+    proposeModeChange: async (groupId: string, newMode: number, onFinish: (data: any) => void, onCancel?: () => void) => {
+      await callContract('propose-mode-change', [Cl.stringUtf8(groupId), Cl.uint(newMode)], onFinish, onCancel);
+    },
+    voteOnModeChange: async (groupId: string, voteFor: boolean, onFinish: (data: any) => void, onCancel?: () => void) => {
+      await callContract('vote-on-mode-change', [Cl.stringUtf8(groupId), Cl.bool(voteFor)], onFinish, onCancel);
+    },
+    cancelModeChange: async (groupId: string, onFinish: (data: any) => void, onCancel?: () => void) => {
+      await callContract('cancel-mode-change', [Cl.stringUtf8(groupId)], onFinish, onCancel);
+    },
     // Constants
     CONTRACT_ADDRESS,
     CONTRACT_NAME
